@@ -5,7 +5,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "rshc",
-    version = "0.1.0",
+    version = "1.0.0",
     about = "Generic Shell Script Compiler"
 )]
 pub struct Cli {
