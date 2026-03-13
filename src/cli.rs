@@ -79,6 +79,10 @@ pub struct Cli {
     /// Use the system call mmap2
     #[arg(short = '2')]
     pub mmap2: bool,
+
+    /// Cross-compilation target triple (e.g. x86_64-unknown-linux-musl)
+    #[arg(short = 't', long = "target")]
+    pub target: Option<String>,
 }
 
 impl Cli {

@@ -1,6 +1,24 @@
+use std::process::Command;
+
 use anyhow::{bail, Result};
 
 use crate::shell_db::SHELLS_DB;
+
+/// Resolve a shell name to its full path using `which`.
+fn resolve_shell(name: &str) -> Result<String> {
+    let output = Command::new("which")
+        .arg(name)
+        .output()
+        .map_err(|e| anyhow::anyhow!("rshc: failed to run which {}: {}", name, e))?;
+    if !output.status.success() {
+        bail!("rshc: shell '{}' not found in PATH", name);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        bail!("rshc: shell '{}' not found in PATH", name);
+    }
+    Ok(path)
+}
 
 pub struct ShellInfo {
     pub shll: String,
@@ -75,6 +93,18 @@ pub fn eval_shell(
         bail!("rshc: invalid shll");
     }
 
+    // Handle #!/usr/bin/env <shell> — resolve the actual shell path
+    let (shll, mut opts) = {
+        let name = shll.rsplit('/').next().unwrap();
+        if name == "env" && !opts_raw.is_empty() {
+            // The real shell name is in opts_raw (e.g. "bash", "zsh")
+            let resolved = resolve_shell(&opts_raw)?;
+            (resolved, String::new())
+        } else {
+            (shll, opts_raw)
+        }
+    };
+
     let shell_name = shll.rsplit('/').next().unwrap();
     if verbose {
         eprintln!("rshc shll={}", shell_name);
@@ -117,7 +147,6 @@ pub fn eval_shell(
     }
 
     // Filter bogus opts
-    let mut opts = opts_raw;
     if !opts.is_empty() && opts == lsto {
         eprintln!("rshc opts={} : Is equal to [-l]. Removing opts", opts);
         opts = String::new();

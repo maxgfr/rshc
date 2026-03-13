@@ -153,7 +153,12 @@ fn main() -> Result<()> {
     )?;
 
     // Compile
-    compiler::make(&args.file, args.outfile.as_deref(), args.verbose)?;
+    compiler::make(
+        &args.file,
+        args.outfile.as_deref(),
+        args.verbose,
+        args.target.as_deref(),
+    )?;
 
     Ok(())
 }
