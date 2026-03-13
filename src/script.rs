@@ -1,23 +1,21 @@
-use std::process::Command;
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{bail, Result};
 
 use crate::shell_db::SHELLS_DB;
 
-/// Resolve a shell name to its full path using `which`.
+/// Resolve a shell name to its full path by searching PATH (pure Rust, no fork/exec).
 fn resolve_shell(name: &str) -> Result<String> {
-    let output = Command::new("which")
-        .arg(name)
-        .output()
-        .map_err(|e| anyhow::anyhow!("rshc: failed to run which {}: {}", name, e))?;
-    if !output.status.success() {
-        bail!("rshc: shell '{}' not found in PATH", name);
+    let paths = std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("rshc: PATH not set"))?;
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if meta.is_file() && (meta.permissions().mode() & 0o111) != 0 {
+                return Ok(candidate.to_string_lossy().into_owned());
+            }
+        }
     }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        bail!("rshc: shell '{}' not found in PATH", name);
-    }
-    Ok(path)
+    bail!("rshc: shell '{}' not found in PATH", name)
 }
 
 pub struct ShellInfo {
@@ -105,6 +103,11 @@ pub fn eval_shell(
         }
     };
 
+    // Validate that the shell binary actually exists
+    if !std::path::Path::new(&shll).exists() {
+        bail!("rshc: shell '{}' not found", shll);
+    }
+
     let shell_name = shll.rsplit('/').next().unwrap_or("");
     if verbose {
         eprintln!("rshc shll={}", shell_name);
@@ -166,4 +169,89 @@ pub fn eval_shell(
         xecc,
         lsto,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_eval_shell_sh() {
+        let text = b"#!/bin/sh\necho hello\n";
+        let info = eval_shell(text, None, None, None, false).unwrap();
+        assert_eq!(info.shll, "/bin/sh");
+        assert_eq!(info.inlo, "-c");
+        assert!(info.opts.is_empty());
+    }
+
+    #[test]
+    fn test_eval_shell_bash() {
+        let text = b"#!/bin/bash\necho hello\n";
+        let info = eval_shell(text, None, None, None, false).unwrap();
+        assert_eq!(info.shll, "/bin/bash");
+        assert_eq!(info.inlo, "-c");
+        assert_eq!(info.xecc, "exec '%s' \"$@\"");
+    }
+
+    #[test]
+    fn test_eval_shell_env_bash() {
+        let text = b"#!/usr/bin/env bash\necho hello\n";
+        let info = eval_shell(text, None, None, None, false).unwrap();
+        // Should resolve to an actual path, not "/usr/bin/env"
+        assert!(info.shll.ends_with("/bash"));
+        assert_eq!(info.inlo, "-c");
+    }
+
+    #[test]
+    fn test_eval_shell_no_shebang() {
+        let text = b"echo hello\n";
+        assert!(eval_shell(text, None, None, None, false).is_err());
+    }
+
+    #[test]
+    fn test_eval_shell_empty_shebang() {
+        let text = b"#!\n";
+        assert!(eval_shell(text, None, None, None, false).is_err());
+    }
+
+    #[test]
+    fn test_eval_shell_too_many_options() {
+        let text = b"#!/bin/bash -e -x\necho hello\n";
+        assert!(eval_shell(text, None, None, None, false).is_err());
+    }
+
+    #[test]
+    fn test_eval_shell_nonexistent() {
+        let text = b"#!/bin/nonexistent_shell_xyz\necho hello\n";
+        assert!(eval_shell(text, None, None, None, false).is_err());
+    }
+
+    #[test]
+    fn test_eval_shell_cli_overrides() {
+        let text = b"#!/bin/sh\necho hello\n";
+        let info = eval_shell(text, Some("-e"), Some("exec '%s'"), Some("--"), false).unwrap();
+        assert_eq!(info.inlo, "-e");
+        assert_eq!(info.xecc, "exec '%s'");
+        assert_eq!(info.lsto, "--");
+    }
+
+    #[test]
+    fn test_eval_shell_with_option() {
+        let text = b"#!/bin/bash -e\necho hello\n";
+        let info = eval_shell(text, None, None, None, false).unwrap();
+        assert_eq!(info.shll, "/bin/bash");
+        assert_eq!(info.opts, "-e");
+    }
+
+    #[test]
+    fn test_resolve_shell_bash() {
+        let path = resolve_shell("bash").unwrap();
+        assert!(path.ends_with("/bash"));
+        assert!(std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn test_resolve_shell_nonexistent() {
+        assert!(resolve_shell("nonexistent_shell_xyz_123").is_err());
+    }
 }

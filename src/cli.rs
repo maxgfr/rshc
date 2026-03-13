@@ -81,37 +81,72 @@ pub struct Cli {
     pub target: Option<String>,
 }
 
+/// Parse a dd/mm/yyyy date string into a Unix timestamp string.
+fn parse_expiry_str(s: &str) -> Result<String> {
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 3 {
+        bail!("rshc parse(-e {}): Not a valid value", s);
+    }
+    let day: u32 = parts[0]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
+    let month: u32 = parts[1]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
+    let year: i32 = parts[2]
+        .parse()
+        .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
+    let date = NaiveDate::from_ymd_opt(year, month, day)
+        .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
+    let datetime = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): invalid time", s))?;
+    let local = Local
+        .from_local_datetime(&datetime)
+        .single()
+        .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): ambiguous datetime", s))?;
+    Ok(format!("{}", local.timestamp()))
+}
+
 impl Cli {
     /// Parse the expiration date string into a Unix timestamp string.
     /// Matches the -e parsing in shc.c:769-787.
     pub fn parse_expiry(&self) -> Result<String> {
         match &self.expiry {
             None => Ok(String::new()),
-            Some(s) => {
-                let parts: Vec<&str> = s.split('/').collect();
-                if parts.len() != 3 {
-                    bail!("rshc parse(-e {}): Not a valid value", s);
-                }
-                let day: u32 = parts[0]
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
-                let month: u32 = parts[1]
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
-                let year: i32 = parts[2]
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
-                let date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
-                let datetime = date
-                    .and_hms_opt(0, 0, 0)
-                    .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): invalid time", s))?;
-                let local = Local
-                    .from_local_datetime(&datetime)
-                    .single()
-                    .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): ambiguous datetime", s))?;
-                Ok(format!("{}", local.timestamp()))
-            }
+            Some(s) => parse_expiry_str(s),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_expiry_valid() {
+        let result = parse_expiry_str("01/06/2030").unwrap();
+        let timestamp: i64 = result.parse().unwrap();
+        assert!(timestamp > 0);
+    }
+
+    #[test]
+    fn test_parse_expiry_invalid_format() {
+        assert!(parse_expiry_str("2030-01-01").is_err());
+    }
+
+    #[test]
+    fn test_parse_expiry_wrong_parts() {
+        assert!(parse_expiry_str("01/2030").is_err());
+    }
+
+    #[test]
+    fn test_parse_expiry_invalid_date() {
+        assert!(parse_expiry_str("32/13/2030").is_err());
+    }
+
+    #[test]
+    fn test_parse_expiry_non_numeric() {
+        assert!(parse_expiry_str("ab/cd/efgh").is_err());
     }
 }

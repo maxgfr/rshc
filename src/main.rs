@@ -140,29 +140,24 @@ fn main() -> Result<()> {
     };
 
     // Generate C code
-    let options = codegen::CodegenOptions {
-        setuid: args.setuid,
-        debugexec: args.debugexec,
-        traceable: !args.untraceable,
-        hardening: args.hardening,
-        busybox: args.busybox,
-        mmap2: args.mmap2,
-    };
-
-    codegen::write_c(
+    let job = codegen::CompileJob {
         file,
-        &date,
-        &args.mail,
-        &shell_info.shll,
-        &shell_info.inlo,
-        &shell_info.xecc,
-        &shell_info.lsto,
-        &shell_info.opts,
-        &text,
-        args.relax,
-        &options,
-        &argv_str,
-    )?;
+        date: &date,
+        mail: &args.mail,
+        shell: &shell_info,
+        text: &text,
+        relax: args.relax,
+        options: codegen::CodegenOptions {
+            setuid: args.setuid,
+            debugexec: args.debugexec,
+            traceable: !args.untraceable,
+            hardening: args.hardening,
+            busybox: args.busybox,
+            mmap2: args.mmap2,
+        },
+        argv_str: &argv_str,
+    };
+    codegen::write_c(&job)?;
 
     // Compile
     compiler::make(
