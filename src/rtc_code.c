@@ -217,31 +217,40 @@ void seccomp_hardening() {
 } 
 /* End Seccomp Sandboxing Init */
 
+static char shc_x_c_path[256];
+static char shc_x_so_path[256];
+
+static void init_shc_paths() {
+    snprintf(shc_x_c_path, sizeof(shc_x_c_path), "/tmp/shc_x_%d.c", getpid());
+    snprintf(shc_x_so_path, sizeof(shc_x_so_path), "/tmp/shc_x_%d.so", getpid());
+}
+
 void shc_x_file() {
     FILE *fp;
     int line = 0;
 
-    if ((fp = fopen("/tmp/shc_x.c", "w")) == NULL ) {exit(1); exit(1);}
+    init_shc_paths();
+    if ((fp = fopen(shc_x_c_path, "w")) == NULL ) {exit(1);}
+    fchmod(fileno(fp), 0600);
     for (line = 0; shc_x[line]; line++)	fprintf(fp, "%s\n", shc_x[line]);
     fflush(fp);fclose(fp);
 }
 
 int make() {
-	char * cc, * cflags, * ldflags;
+	char * cc;
     char cmd[4096];
 
 	cc = getenv("CC");
 	if (!cc) cc = "cc";
 
-	sprintf(cmd, "%s %s -o %s %s", cc, "-Wall -fpic -shared", "/tmp/shc_x.so", "/tmp/shc_x.c -ldl");
-	if (system(cmd)) {remove("/tmp/shc_x.c"); return -1;}
-	remove("/tmp/shc_x.c"); return 0;
+	snprintf(cmd, sizeof(cmd), "%s %s -o %s %s -ldl", cc, "-Wall -fpic -shared", shc_x_so_path, shc_x_c_path);
+	if (system(cmd)) {remove(shc_x_c_path); return -1;}
+	remove(shc_x_c_path); return 0;
 }
 
 void arc4_hardrun(void * str, int len) {
     //Decode locally
     char tmp2[len];
-    char tmp3[len+1024];
     memcpy(tmp2, str, len);
 
 	unsigned char tmp, * ptr = (unsigned char *)tmp2;
@@ -252,7 +261,7 @@ void arc4_hardrun(void * str, int len) {
     shc_x_file();
     if (make()) {exit(1);}
 
-    setenv("LD_PRELOAD","/tmp/shc_x.so",1);
+    setenv("LD_PRELOAD",shc_x_so_path,1);
 
     if(pid==0) {
 
@@ -275,9 +284,6 @@ void arc4_hardrun(void * str, int len) {
             len--;
         }
 
-        //Do the magic
-        sprintf(tmp3, "%s %s", "'********' 21<<<", tmp2);
-
         //Exec bash script //fork execl with 'sh -c'
         system(tmp2);
 
@@ -285,7 +291,7 @@ void arc4_hardrun(void * str, int len) {
         memcpy(tmp2, str, lentmp);
 
         //Clean temp
-        remove("/tmp/shc_x.so");
+        remove(shc_x_so_path);
 
         //Sinal to detach ptrace
         ptrace(PTRACE_DETACH, 0, 0, 0);
@@ -363,7 +369,7 @@ int chkenv(int argc)
 	 key(&data, sizeof(data));
 	 key(&mask, sizeof(mask));
 	arc4(&mask, sizeof(mask));
-	sprintf(buff, "x%lx", mask);
+	snprintf(buff, sizeof(buff), "x%lx", mask);
 	string = getenv(buff);
 #if DEBUGEXEC
 	fprintf(stderr, "getenv(%s)=%s\n", buff, string ? string : "<null>");
@@ -371,7 +377,7 @@ int chkenv(int argc)
 	l = strlen(buff);
 	if (!string) {
 		/* 1st */
-		sprintf(&buff[l], "=%lu %d", mask, argc);
+		snprintf(&buff[l], sizeof(buff) - l, "=%lu %d", mask, argc);
 		putenv(strdup(buff));
 		return 0;
 	}
@@ -388,16 +394,17 @@ void chkenv_end(void){}
 
 #if HARDENING
 
-static void gets_process_name(const pid_t pid, char * name) {
-	char procfile[BUFSIZ];
-	sprintf(procfile, "/proc/%d/cmdline", pid);
+static void gets_process_name(const pid_t pid, char * name, size_t name_size) {
+	char procfile[256];
+	snprintf(procfile, sizeof(procfile), "/proc/%d/cmdline", pid);
 	FILE* f = fopen(procfile, "r");
 	if (f) {
 		size_t size;
-		size = fread(name, sizeof (char), sizeof (procfile), f);
+		size = fread(name, sizeof(char), name_size - 1, f);
 		if (size > 0) {
 			if ('\n' == name[size - 1])
 				name[size - 1] = '\0';
+			name[size] = '\0';
 		}
 		fclose(f);
 	}
@@ -409,22 +416,22 @@ void hardening() {
 
     int pid = getppid();
     char name[256] = {0};
-    gets_process_name(pid, name);
+    gets_process_name(pid, name, sizeof(name));
 
-    if (   (strcmp(name, "bash") != 0) 
-        && (strcmp(name, "/bin/bash") != 0) 
-        && (strcmp(name, "sh") != 0) 
-        && (strcmp(name, "/bin/sh") != 0) 
-        && (strcmp(name, "sudo") != 0) 
-        && (strcmp(name, "/bin/sudo") != 0) 
-        && (strcmp(name, "/usr/bin/sudo") != 0)
-        && (strcmp(name, "gksudo") != 0) 
-        && (strcmp(name, "/bin/gksudo") != 0) 
-        && (strcmp(name, "/usr/bin/gksudo") != 0) 
-        && (strcmp(name, "kdesu") != 0) 
-        && (strcmp(name, "/bin/kdesu") != 0) 
-        && (strcmp(name, "/usr/bin/kdesu") != 0) 
-       )
+    /* Extract basename for comparison (handle full paths transparently) */
+    const char * base = strrchr(name, '/');
+    base = base ? base + 1 : name;
+
+    static const char * allowed[] = {
+        "sh", "bash", "dash", "zsh", "ksh", "csh", "tcsh", "fish",
+        "env", "sudo", "gksudo", "kdesu", "doas", "pkexec", NULL
+    };
+    int allowed_parent = 0;
+    for (int k = 0; allowed[k]; k++) {
+        if (strcmp(base, allowed[k]) == 0) { allowed_parent = 1; break; }
+    }
+
+    if (!allowed_parent)
     {
         printf("Operation not permitted\n");
         kill(getpid(), SIGKILL);
@@ -463,9 +470,9 @@ void untraceable(char * argv0)
 		pid = getppid();
 		/* For problematic SunOS ptrace */
 #if defined(__FreeBSD__)
-		sprintf(proc, "/proc/%d/mem", (int)pid);
+		snprintf(proc, sizeof(proc), "/proc/%d/mem", (int)pid);
 #else
-		sprintf(proc, "/proc/%d/as",  (int)pid);
+		snprintf(proc, sizeof(proc), "/proc/%d/as",  (int)pid);
 #endif
 		close(0);
 		mine = !open(proc, O_RDWR|O_EXCL);
@@ -548,7 +555,7 @@ char * xsh(int argc, char ** argv)
 			scrpt = malloc(512);
 			if (!scrpt)
 				return 0;
-			sprintf(scrpt, xecc, me);
+			snprintf(scrpt, 512, xecc, me);
 		} else {
 			scrpt = me;
 		}

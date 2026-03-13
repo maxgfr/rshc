@@ -3,11 +3,7 @@ use chrono::{Local, NaiveDate, TimeZone};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "rshc",
-    version = "1.1.0",
-    about = "Generic Shell Script Compiler"
-)]
+#[command(name = "rshc", version, about = "Generic Shell Script Compiler")]
 pub struct Cli {
     /// Expiration date in dd/mm/yyyy format
     #[arg(short = 'e')]
@@ -21,8 +17,8 @@ pub struct Cli {
     pub mail: String,
 
     /// File name of the script to compile
-    #[arg(short = 'f')]
-    pub file: String,
+    #[arg(short = 'f', required_unless_present_any = ["show_license", "show_abstract"])]
+    pub file: Option<String>,
 
     /// Inline option for the shell interpreter i.e: -e
     #[arg(short = 'i')]
@@ -107,7 +103,9 @@ impl Cli {
                     .map_err(|_| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
                 let date = NaiveDate::from_ymd_opt(year, month, day)
                     .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): Not a valid value", s))?;
-                let datetime = date.and_hms_opt(0, 0, 0).unwrap();
+                let datetime = date
+                    .and_hms_opt(0, 0, 0)
+                    .ok_or_else(|| anyhow::anyhow!("rshc parse(-e {}): invalid time", s))?;
                 let local = Local
                     .from_local_datetime(&datetime)
                     .single()

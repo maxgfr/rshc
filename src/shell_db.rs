@@ -86,4 +86,10 @@ pub static SHELLS_DB: &[ShellEntry] = &[
         lsto: "-b",
         xecc: "exec '%s' $argv",
     },
+    ShellEntry {
+        shll: "fish",
+        inlo: "-c",
+        lsto: "",
+        xecc: "exec '%s' $argv",
+    },
 ];

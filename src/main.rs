@@ -55,7 +55,10 @@ fn main() -> Result<()> {
 
     // Handle -C (license)
     if args.show_license {
-        eprintln!("rshc Version 0.1.0, Generic Shell Script Compiler");
+        eprintln!(
+            "rshc Version {}, Generic Shell Script Compiler",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!("GNU GPL Version 3");
         eprint!("rshc ");
         for line in COPYING {
@@ -66,7 +69,10 @@ fn main() -> Result<()> {
 
     // Handle -A (abstract)
     if args.show_abstract {
-        eprintln!("rshc Version 0.1.0, Generic Shell Script Compiler");
+        eprintln!(
+            "rshc Version {}, Generic Shell Script Compiler",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!("GNU GPL Version 3");
         eprint!("rshc ");
         for line in ABSTRACT {
@@ -75,6 +81,12 @@ fn main() -> Result<()> {
         std::process::exit(0);
     }
 
+    // From here on, -f is required (clap enforces this unless -C/-A)
+    let file = args
+        .file
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("rshc: -f <file> is required"))?;
+
     // Parse expiration date
     let date = args.parse_expiry()?;
     if args.verbose && !date.is_empty() {
@@ -82,7 +94,7 @@ fn main() -> Result<()> {
     }
 
     // Read script
-    let text = script::read_script(&args.file)?;
+    let text = script::read_script(file)?;
 
     // Evaluate shell
     let shell_info = script::eval_shell(
@@ -99,7 +111,7 @@ fn main() -> Result<()> {
         if let Some(ref e) = args.expiry {
             parts.push(format!("-e {}", e));
         }
-        parts.push(format!("-f {}", args.file));
+        parts.push(format!("-f {}", file));
         if args.relax {
             parts.push("-r".to_string());
         }
@@ -138,7 +150,7 @@ fn main() -> Result<()> {
     };
 
     codegen::write_c(
-        &args.file,
+        file,
         &date,
         &args.mail,
         &shell_info.shll,
@@ -154,7 +166,7 @@ fn main() -> Result<()> {
 
     // Compile
     compiler::make(
-        &args.file,
+        file,
         args.outfile.as_deref(),
         args.verbose,
         args.target.as_deref(),

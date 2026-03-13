@@ -9,6 +9,13 @@ fn cross_prefix(target: &str) -> String {
     target.replace("unknown-", "")
 }
 
+/// Append space-separated flags as individual arguments to a Command.
+fn add_flags(cmd: &mut Command, flags: &str) {
+    for flag in flags.split_whitespace() {
+        cmd.arg(flag);
+    }
+}
+
 /// Compile, strip, and chmod the generated C file.
 /// Matches make() in shc.c:1300-1338.
 /// If `target` is provided, uses a cross-compiler derived from the target triple.
@@ -18,7 +25,7 @@ pub fn make(file: &str, outfile: Option<&str>, verbose: bool, target: Option<&st
         let cc = std::env::var("CC").unwrap_or_else(|_| format!("{}-gcc", prefix));
         let strip = std::env::var("STRIP").unwrap_or_else(|_| format!("{}-strip", prefix));
         let extra = if t.contains("musl") {
-            " -static".to_string()
+            "-static".to_string()
         } else {
             String::new()
         };
@@ -38,38 +45,46 @@ pub fn make(file: &str, outfile: Option<&str>, verbose: bool, target: Option<&st
     };
 
     let c_file = format!("{}.x.c", file);
-    let cmd = format!(
-        "{} {}{} {} {} -o {}",
-        cc, cflags, extra_cflags, ldflags, c_file, out
-    );
+
+    // Build compilation command using safe argument passing (no shell interpolation)
+    let mut cmd = Command::new(&cc);
+    add_flags(&mut cmd, &cflags);
+    add_flags(&mut cmd, &extra_cflags);
+    add_flags(&mut cmd, &ldflags);
+    cmd.arg(&c_file).arg("-o").arg(&out);
+
     if verbose {
-        eprintln!("rshc: {}", cmd);
+        eprintln!(
+            "rshc: {} {}{} {} {} -o {}",
+            cc, cflags, extra_cflags, ldflags, c_file, out
+        );
     }
-    let status = Command::new("sh").arg("-c").arg(&cmd).status()?;
+    let status = cmd.status()?;
     if !status.success() {
         anyhow::bail!("compilation failed");
     }
 
-    // Strip (ignore failure)
-    let cmd = format!("{} {}", strip_cmd, out);
+    // Strip (best-effort, don't fail the build)
     if verbose {
-        eprintln!("rshc: {}", cmd);
+        eprintln!("rshc: {} {}", strip_cmd, out);
     }
-    if let Ok(status) = Command::new("sh").arg("-c").arg(&cmd).status() {
-        if !status.success() {
-            eprintln!("rshc: never mind");
+    match Command::new(&strip_cmd).arg(&out).status() {
+        Ok(status) if !status.success() => {
+            eprintln!("rshc: strip failed (non-zero exit), continuing without stripping");
         }
+        Err(e) => {
+            eprintln!("rshc: strip not available ({}), continuing", e);
+        }
+        _ => {}
     }
 
-    // chmod (ignore failure)
-    let cmd = format!("chmod ug=rwx,o=rx {}", out);
+    // Set permissions: ug=rwx,o=rx (0o775) using Rust API instead of shell
+    use std::os::unix::fs::PermissionsExt;
     if verbose {
-        eprintln!("rshc: {}", cmd);
+        eprintln!("rshc: chmod 0775 {}", out);
     }
-    if let Ok(status) = Command::new("sh").arg("-c").arg(&cmd).status() {
-        if !status.success() {
-            eprintln!("rshc: remove read permission");
-        }
+    if let Err(e) = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o775)) {
+        eprintln!("rshc: could not set permissions: {}", e);
     }
 
     Ok(())

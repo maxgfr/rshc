@@ -95,7 +95,7 @@ pub fn eval_shell(
 
     // Handle #!/usr/bin/env <shell> — resolve the actual shell path
     let (shll, mut opts) = {
-        let name = shll.rsplit('/').next().unwrap();
+        let name = shll.rsplit('/').next().unwrap_or("");
         if name == "env" && !opts_raw.is_empty() {
             // The real shell name is in opts_raw (e.g. "bash", "zsh")
             let resolved = resolve_shell(&opts_raw)?;
@@ -105,7 +105,7 @@ pub fn eval_shell(
         }
     };
 
-    let shell_name = shll.rsplit('/').next().unwrap();
+    let shell_name = shll.rsplit('/').next().unwrap_or("");
     if verbose {
         eprintln!("rshc shll={}", shell_name);
     }

@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use rand::rngs::OsRng;
 use rand::Rng;
 
 use crate::noise::{rand_chr, rand_mod};
@@ -105,7 +106,7 @@ pub fn write_c(
     options: &CodegenOptions,
     argv_str: &str,
 ) -> anyhow::Result<String> {
-    let mut rng = rand::thread_rng();
+    let mut rng = OsRng;
 
     // --- Prepare data items (matching write_C local variables) ---
 
@@ -203,7 +204,11 @@ pub fn write_c(
 
     // Header comment
     writeln!(o, "#if 0")?;
-    writeln!(o, "\trshc Version 0.1.0, Generic Shell Script Compiler")?;
+    writeln!(
+        o,
+        "\trshc Version {}, Generic Shell Script Compiler",
+        env!("CARGO_PKG_VERSION")
+    )?;
     write!(o, "\tGNU GPL Version 3\n\n\t{}", argv_str)?;
     writeln!(o, "\n#endif\n")?;
     write!(o, "static  char data [] = ")?;
@@ -211,21 +216,21 @@ pub fn write_c(
     // Build array of (data, name) tuples — 15 items indexed 0..14
     // Order matches the switch cases in shc.c:1264-1280
     let arrays: [(Vec<u8>, &str); 15] = [
-        (pswd.clone(), "pswd"), // 0
-        (msg1, "msg1"),         // 1
-        (date_bytes, "date"),   // 2
-        (shll_bytes, "shll"),   // 3
-        (inlo_bytes, "inlo"),   // 4
-        (xecc_bytes, "xecc"),   // 5
-        (lsto_bytes, "lsto"),   // 6
-        (tst1, "tst1"),         // 7
-        (chk1, "chk1"),         // 8
-        (msg2, "msg2"),         // 9
-        (rlax_bytes, "rlax"),   // 10
-        (opts_bytes, "opts"),   // 11
-        (text_bytes, "text"),   // 12
-        (tst2, "tst2"),         // 13
-        (chk2, "chk2"),         // 14
+        (pswd, "pswd"),       // 0
+        (msg1, "msg1"),       // 1
+        (date_bytes, "date"), // 2
+        (shll_bytes, "shll"), // 3
+        (inlo_bytes, "inlo"), // 4
+        (xecc_bytes, "xecc"), // 5
+        (lsto_bytes, "lsto"), // 6
+        (tst1, "tst1"),       // 7
+        (chk1, "chk1"),       // 8
+        (msg2, "msg2"),       // 9
+        (rlax_bytes, "rlax"), // 10
+        (opts_bytes, "opts"), // 11
+        (text_bytes, "text"), // 12
+        (tst2, "tst2"),       // 13
+        (chk2, "chk2"),       // 14
     ];
 
     // Random ordering — matches the fall-through switch in shc.c:1260-1283
@@ -287,5 +292,10 @@ pub fn write_c(
     write!(o, "{}", RTC_CODE)?;
 
     o.flush()?;
+
+    // Restrict permissions on generated C source (contains encrypted script data)
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o600))?;
+
     Ok(output_path)
 }
