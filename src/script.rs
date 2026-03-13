@@ -13,8 +13,7 @@ pub struct ShellInfo {
 /// Read script file contents.
 /// Matches read_script() in shc.c:1077-1114.
 pub fn read_script(path: &str) -> Result<Vec<u8>> {
-    let text = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("rshc: {}: {}", path, e))?;
+    let text = std::fs::read(path).map_err(|e| anyhow::anyhow!("rshc: {}: {}", path, e))?;
 
     // Check current System ARG_MAX limit
     let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
@@ -25,7 +24,9 @@ pub fn read_script(path: &str) -> Result<Vec<u8>> {
              \"maximum size of arguments to EXEC\", could comprise its binary execution.\n\
              In the current System the call sysconf(_SC_ARG_MAX) returns {} bytes\n\
              and your script \"{}\" is {} bytes length.",
-            arg_max, path, text.len()
+            arg_max,
+            path,
+            text.len()
         );
     }
 
@@ -60,7 +61,11 @@ pub fn eval_shell(
     // If there's a third token, the sscanf would have matched 3 items (i > 2) → error
     let third = parts.next().and_then(|s| {
         let t = s.trim();
-        if t.is_empty() { None } else { Some(t.to_string()) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
     });
     if third.is_some() {
         bail!("rshc: invalid first line in script: {}", first_line);
@@ -96,22 +101,13 @@ pub fn eval_shell(
     }
 
     let inlo = inlo.ok_or_else(|| {
-        anyhow::anyhow!(
-            "rshc Unknown shell ({}): specify [-i][-x][-l]",
-            shell_name
-        )
+        anyhow::anyhow!("rshc Unknown shell ({}): specify [-i][-x][-l]", shell_name)
     })?;
     let xecc = xecc.ok_or_else(|| {
-        anyhow::anyhow!(
-            "rshc Unknown shell ({}): specify [-i][-x][-l]",
-            shell_name
-        )
+        anyhow::anyhow!("rshc Unknown shell ({}): specify [-i][-x][-l]", shell_name)
     })?;
     let lsto = lsto.ok_or_else(|| {
-        anyhow::anyhow!(
-            "rshc Unknown shell ({}): specify [-i][-x][-l]",
-            shell_name
-        )
+        anyhow::anyhow!("rshc Unknown shell ({}): specify [-i][-x][-l]", shell_name)
     })?;
 
     if verbose {
@@ -123,10 +119,7 @@ pub fn eval_shell(
     // Filter bogus opts
     let mut opts = opts_raw;
     if !opts.is_empty() && opts == lsto {
-        eprintln!(
-            "rshc opts={} : Is equal to [-l]. Removing opts",
-            opts
-        );
+        eprintln!("rshc opts={} : Is equal to [-l]. Removing opts", opts);
         opts = String::new();
     } else if opts == "-" {
         eprintln!("rshc opts={} : No real one. Removing opts", opts);

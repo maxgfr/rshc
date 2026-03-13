@@ -3,14 +3,21 @@ use chrono::{Local, NaiveDate, TimeZone};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "rshc", version = "0.1.0", about = "Generic Shell Script Compiler")]
+#[command(
+    name = "rshc",
+    version = "0.1.0",
+    about = "Generic Shell Script Compiler"
+)]
 pub struct Cli {
     /// Expiration date in dd/mm/yyyy format
     #[arg(short = 'e')]
     pub expiry: Option<String>,
 
     /// Message to display upon expiration
-    #[arg(short = 'm', default_value = "Please contact your provider jahidulhamid@yahoo.com")]
+    #[arg(
+        short = 'm',
+        default_value = "Please contact your provider jahidulhamid@yahoo.com"
+    )]
     pub mail: String,
 
     /// File name of the script to compile

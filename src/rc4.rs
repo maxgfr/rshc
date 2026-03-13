@@ -41,9 +41,9 @@ impl Rc4 {
             loop {
                 let tmp = self.stte[self.indx as usize];
                 self.kndx = self.kndx.wrapping_add(tmp);
-                self.kndx = self.kndx.wrapping_add(
-                    data[ptr_offset + (self.indx as usize % remaining as usize)],
-                );
+                self.kndx = self
+                    .kndx
+                    .wrapping_add(data[ptr_offset + (self.indx as usize % remaining as usize)]);
                 self.stte[self.indx as usize] = self.stte[self.kndx as usize];
                 self.stte[self.kndx as usize] = tmp;
                 self.indx = self.indx.wrapping_add(1);
@@ -75,9 +75,8 @@ impl Rc4 {
     pub fn key_with_file(&mut self, path: &str) -> Result<(), std::io::Error> {
         use std::mem;
 
-        let c_path = std::ffi::CString::new(path).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path")
-        })?;
+        let c_path = std::ffi::CString::new(path)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
 
         unsafe {
             let mut statf: libc::stat = mem::zeroed();
