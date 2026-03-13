@@ -1,8 +1,8 @@
 mod cli;
 mod codegen;
 mod compiler;
+mod native;
 mod noise;
-mod rc4;
 mod script;
 mod shell_db;
 
@@ -105,67 +105,89 @@ fn main() -> Result<()> {
         args.verbose,
     )?;
 
-    // Build argv string for header comment
-    let argv_str = {
-        let mut parts = vec!["rshc".to_string()];
-        if let Some(ref e) = args.expiry {
-            parts.push(format!("-e {}", e));
-        }
-        parts.push(format!("-f {}", file));
-        if args.relax {
-            parts.push("-r".to_string());
-        }
-        if args.verbose {
-            parts.push("-v".to_string());
-        }
-        if args.setuid {
-            parts.push("-S".to_string());
-        }
-        if args.debugexec {
-            parts.push("-D".to_string());
-        }
-        if args.untraceable {
-            parts.push("-U".to_string());
-        }
-        if args.hardening {
-            parts.push("-H".to_string());
-        }
-        if args.busybox {
-            parts.push("-B".to_string());
-        }
-        if args.mmap2 {
-            parts.push("-2".to_string());
-        }
-        parts.join(" ")
+    let options = codegen::CodegenOptions {
+        setuid: args.setuid,
+        debugexec: args.debugexec,
+        traceable: !args.untraceable,
+        hardening: args.hardening,
+        busybox: args.busybox,
+        mmap2: args.mmap2,
     };
 
-    // Generate C code
-    let job = codegen::CompileJob {
-        file,
-        date: &date,
-        mail: &args.mail,
-        shell: &shell_info,
-        text: &text,
-        relax: args.relax,
-        options: codegen::CodegenOptions {
-            setuid: args.setuid,
-            debugexec: args.debugexec,
-            traceable: !args.untraceable,
-            hardening: args.hardening,
-            busybox: args.busybox,
-            mmap2: args.mmap2,
-        },
-        argv_str: &argv_str,
-    };
-    codegen::write_c(&job)?;
+    if args.native {
+        // Native Rust runner path — no C compiler needed
+        let job = codegen::CompileJob {
+            file,
+            date: &date,
+            mail: &args.mail,
+            shell: &shell_info,
+            text: &text,
+            relax: args.relax,
+            options,
+            argv_str: "",
+        };
+        let encrypted = codegen::encrypt_script(&job)?;
+        native::build_native(
+            &encrypted,
+            &job.options,
+            file,
+            args.outfile.as_deref(),
+            args.verbose,
+        )?;
+    } else {
+        // Classic C codegen + cc compilation path
+        let argv_str = {
+            let mut parts = vec!["rshc".to_string()];
+            if let Some(ref e) = args.expiry {
+                parts.push(format!("-e {}", e));
+            }
+            parts.push(format!("-f {}", file));
+            if args.relax {
+                parts.push("-r".to_string());
+            }
+            if args.verbose {
+                parts.push("-v".to_string());
+            }
+            if args.setuid {
+                parts.push("-S".to_string());
+            }
+            if args.debugexec {
+                parts.push("-D".to_string());
+            }
+            if args.untraceable {
+                parts.push("-U".to_string());
+            }
+            if args.hardening {
+                parts.push("-H".to_string());
+            }
+            if args.busybox {
+                parts.push("-B".to_string());
+            }
+            if args.mmap2 {
+                parts.push("-2".to_string());
+            }
+            parts.join(" ")
+        };
 
-    // Compile
-    compiler::make(
-        file,
-        args.outfile.as_deref(),
-        args.verbose,
-        args.target.as_deref(),
-    )?;
+        let job = codegen::CompileJob {
+            file,
+            date: &date,
+            mail: &args.mail,
+            shell: &shell_info,
+            text: &text,
+            relax: args.relax,
+            options,
+            argv_str: &argv_str,
+        };
+        codegen::write_c(&job)?;
+
+        compiler::make(
+            file,
+            args.outfile.as_deref(),
+            args.verbose,
+            args.target.as_deref(),
+        )?;
+    }
 
     Ok(())
 }

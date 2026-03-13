@@ -5,6 +5,12 @@ pub struct Rc4 {
     kndx: u8,
 }
 
+impl Default for Rc4 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Rc4 {
     pub fn new() -> Self {
         let mut rc4 = Rc4 {

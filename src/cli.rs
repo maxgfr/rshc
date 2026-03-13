@@ -77,8 +77,12 @@ pub struct Cli {
     pub mmap2: bool,
 
     /// Cross-compilation target triple (e.g. x86_64-unknown-linux-musl)
-    #[arg(short = 't', long = "target")]
+    #[arg(short = 't', long = "target", conflicts_with = "native")]
     pub target: Option<String>,
+
+    /// Use native Rust runner instead of C compilation (no cc required)
+    #[arg(short = 'n', long = "native", conflicts_with_all = ["hardening", "busybox", "mmap2"])]
+    pub native: bool,
 }
 
 /// Parse a dd/mm/yyyy date string into a Unix timestamp string.

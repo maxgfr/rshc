@@ -5,8 +5,8 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::noise::{rand_chr, rand_mod};
-use crate::rc4::Rc4;
 use crate::script::ShellInfo;
+use rshc::rc4::Rc4;
 
 static RTC_CODE: &str = include_str!("rtc_code.c");
 
@@ -29,6 +29,127 @@ pub struct CompileJob<'a> {
     pub relax: bool,
     pub options: CodegenOptions,
     pub argv_str: &'a str,
+}
+
+/// Holds all 15 encrypted arrays produced by the RC4 encryption pipeline.
+pub struct EncryptedScript {
+    pub pswd: Vec<u8>,
+    pub msg1: Vec<u8>,
+    pub date: Vec<u8>,
+    pub shll: Vec<u8>,
+    pub inlo: Vec<u8>,
+    pub xecc: Vec<u8>,
+    pub lsto: Vec<u8>,
+    pub tst1: Vec<u8>,
+    pub chk1: Vec<u8>,
+    pub msg2: Vec<u8>,
+    pub rlax: Vec<u8>,
+    pub opts: Vec<u8>,
+    pub text: Vec<u8>,
+    pub tst2: Vec<u8>,
+    pub chk2: Vec<u8>,
+    pub relax_was_zero: bool,
+}
+
+/// Encrypt the script and all metadata fields using RC4.
+/// This is the shared encryption logic used by both the C codegen and native paths.
+pub fn encrypt_script(job: &CompileJob) -> anyhow::Result<EncryptedScript> {
+    let mut rng = OsRng;
+
+    // Prepare plaintext data items
+    let mut msg1: Vec<u8> = format!("has expired!\n{}", job.mail).into_bytes();
+    msg1.push(0);
+
+    let mut date_bytes: Vec<u8> = job.date.as_bytes().to_vec();
+    date_bytes.push(0);
+
+    let mut shll_bytes: Vec<u8> = job.shell.shll.as_bytes().to_vec();
+    shll_bytes.push(0);
+
+    let mut inlo_bytes: Vec<u8> = job.shell.inlo.as_bytes().to_vec();
+    inlo_bytes.push(0);
+
+    let mut xecc_bytes: Vec<u8> = job.shell.xecc.as_bytes().to_vec();
+    xecc_bytes.push(0);
+
+    let mut lsto_bytes: Vec<u8> = job.shell.lsto.as_bytes().to_vec();
+    lsto_bytes.push(0);
+
+    let mut tst1: Vec<u8> = b"location has changed!\0".to_vec();
+    let chk1_plain = tst1.clone();
+
+    let mut msg2: Vec<u8> = b"abnormal behavior!\0".to_vec();
+
+    let mut rlax_bytes: Vec<u8> = vec![u8::from(job.relax)];
+    let rlax_was_zero = rlax_bytes[0] == 0;
+
+    let mut opts_bytes: Vec<u8> = job.shell.opts.as_bytes().to_vec();
+    opts_bytes.push(0);
+
+    let mut text_bytes: Vec<u8> = job.text.to_vec();
+    text_bytes.push(0);
+
+    let mut tst2: Vec<u8> = b"shell has changed!\0".to_vec();
+    let chk2_plain = tst2.clone();
+
+    // Generate random password and encrypt
+    let mut pswd = [0u8; 256];
+    rng.fill(&mut pswd[..]);
+
+    let mut rc4 = Rc4::new();
+    rc4.reset();
+    rc4.key(&pswd);
+
+    // Encrypt in exact order matching C runtime's xsh() decryption
+    rc4.arc4(&mut msg1);
+    rc4.arc4(&mut date_bytes);
+    rc4.arc4(&mut shll_bytes);
+    rc4.arc4(&mut inlo_bytes);
+    rc4.arc4(&mut xecc_bytes);
+    rc4.arc4(&mut lsto_bytes);
+    rc4.arc4(&mut tst1);
+
+    // chk1: key with plaintext copy, then encrypt
+    let mut chk1 = chk1_plain;
+    rc4.key(&chk1);
+    rc4.arc4(&mut chk1);
+
+    rc4.arc4(&mut msg2);
+    rc4.arc4(&mut rlax_bytes);
+
+    // key_with_file conditional: check !rlax[0] BEFORE encryption, call AFTER
+    if rlax_was_zero {
+        rc4.key_with_file(&job.shell.shll)
+            .map_err(|e| anyhow::anyhow!("rshc: invalid file name: {} {}", job.shell.shll, e))?;
+    }
+
+    rc4.arc4(&mut opts_bytes);
+    rc4.arc4(&mut text_bytes);
+    rc4.arc4(&mut tst2);
+
+    // chk2: key with plaintext copy, then encrypt
+    let mut chk2 = chk2_plain;
+    rc4.key(&chk2);
+    rc4.arc4(&mut chk2);
+
+    Ok(EncryptedScript {
+        pswd: pswd.to_vec(),
+        msg1,
+        date: date_bytes,
+        shll: shll_bytes,
+        inlo: inlo_bytes,
+        xecc: xecc_bytes,
+        lsto: lsto_bytes,
+        tst1,
+        chk1,
+        msg2,
+        rlax: rlax_bytes,
+        opts: opts_bytes,
+        text: text_bytes,
+        tst2,
+        chk2,
+        relax_was_zero: rlax_was_zero,
+    })
 }
 
 /// Write bytes with random pre/post padding in octal escape format.
@@ -106,92 +227,8 @@ fn prnt_array(
 /// Generate the C output file with encrypted script data and runtime code.
 /// Matches write_C() in shc.c:1184-1298.
 pub fn write_c(job: &CompileJob) -> anyhow::Result<String> {
+    let encrypted = encrypt_script(job)?;
     let mut rng = OsRng;
-
-    // --- Prepare data items (matching write_C local variables) ---
-
-    // msg1 = "has expired!\n" + mail + \0
-    let mut msg1: Vec<u8> = format!("has expired!\n{}", job.mail).into_bytes();
-    msg1.push(0);
-
-    // date + \0
-    let mut date_bytes: Vec<u8> = job.date.as_bytes().to_vec();
-    date_bytes.push(0);
-
-    let mut shll_bytes: Vec<u8> = job.shell.shll.as_bytes().to_vec();
-    shll_bytes.push(0);
-
-    let mut inlo_bytes: Vec<u8> = job.shell.inlo.as_bytes().to_vec();
-    inlo_bytes.push(0);
-
-    let mut xecc_bytes: Vec<u8> = job.shell.xecc.as_bytes().to_vec();
-    xecc_bytes.push(0);
-
-    let mut lsto_bytes: Vec<u8> = job.shell.lsto.as_bytes().to_vec();
-    lsto_bytes.push(0);
-
-    // tst1 / chk1 — integrity check pair
-    let mut tst1: Vec<u8> = b"location has changed!\0".to_vec();
-    let chk1_plain = tst1.clone();
-
-    // msg2
-    let mut msg2: Vec<u8> = b"abnormal behavior!\0".to_vec();
-
-    // rlax: 1 byte
-    let mut rlax_bytes: Vec<u8> = vec![u8::from(job.relax)];
-    let rlax_was_zero = rlax_bytes[0] == 0;
-
-    let mut opts_bytes: Vec<u8> = job.shell.opts.as_bytes().to_vec();
-    opts_bytes.push(0);
-
-    let mut text_bytes: Vec<u8> = job.text.to_vec();
-    text_bytes.push(0);
-
-    // tst2 / chk2 — integrity check pair
-    let mut tst2: Vec<u8> = b"shell has changed!\0".to_vec();
-    let chk2_plain = tst2.clone();
-
-    // --- Generate password and encrypt ---
-    let mut pswd = [0u8; 256];
-    rng.fill(&mut pswd[..]);
-
-    let mut rc4 = Rc4::new();
-    rc4.reset();
-    rc4.key(&pswd);
-
-    // Encrypt in exact same order as shc.c:1222-1243
-    rc4.arc4(&mut msg1);
-    rc4.arc4(&mut date_bytes);
-    rc4.arc4(&mut shll_bytes);
-    rc4.arc4(&mut inlo_bytes);
-    rc4.arc4(&mut xecc_bytes);
-    rc4.arc4(&mut lsto_bytes);
-    rc4.arc4(&mut tst1);
-
-    // chk1: key with plaintext copy, then encrypt
-    let mut chk1 = chk1_plain;
-    rc4.key(&chk1);
-    rc4.arc4(&mut chk1);
-
-    rc4.arc4(&mut msg2);
-
-    // Save rlax_was_zero BEFORE encrypting rlax
-    rc4.arc4(&mut rlax_bytes);
-
-    // key_with_file conditional: check !rlax[0] BEFORE encryption, call AFTER
-    if rlax_was_zero {
-        rc4.key_with_file(&job.shell.shll)
-            .map_err(|e| anyhow::anyhow!("rshc: invalid file name: {} {}", job.shell.shll, e))?;
-    }
-
-    rc4.arc4(&mut opts_bytes);
-    rc4.arc4(&mut text_bytes);
-    rc4.arc4(&mut tst2);
-
-    // chk2: key with plaintext copy, then encrypt
-    let mut chk2 = chk2_plain;
-    rc4.key(&chk2);
-    rc4.arc4(&mut chk2);
 
     // --- Output C file ---
     let output_path = format!("{}.x.c", job.file);
@@ -212,26 +249,25 @@ pub fn write_c(job: &CompileJob) -> anyhow::Result<String> {
     write!(o, "static  char data [] = ")?;
 
     // Build array of (data, name) references — 15 items indexed 0..14
-    // Order matches the switch cases in shc.c:1264-1280
     let arrays: [(&[u8], &str); 15] = [
-        (&pswd, "pswd"),       // 0
-        (&msg1, "msg1"),       // 1
-        (&date_bytes, "date"), // 2
-        (&shll_bytes, "shll"), // 3
-        (&inlo_bytes, "inlo"), // 4
-        (&xecc_bytes, "xecc"), // 5
-        (&lsto_bytes, "lsto"), // 6
-        (&tst1, "tst1"),       // 7
-        (&chk1, "chk1"),       // 8
-        (&msg2, "msg2"),       // 9
-        (&rlax_bytes, "rlax"), // 10
-        (&opts_bytes, "opts"), // 11
-        (&text_bytes, "text"), // 12
-        (&tst2, "tst2"),       // 13
-        (&chk2, "chk2"),       // 14
+        (&encrypted.pswd, "pswd"),
+        (&encrypted.msg1, "msg1"),
+        (&encrypted.date, "date"),
+        (&encrypted.shll, "shll"),
+        (&encrypted.inlo, "inlo"),
+        (&encrypted.xecc, "xecc"),
+        (&encrypted.lsto, "lsto"),
+        (&encrypted.tst1, "tst1"),
+        (&encrypted.chk1, "chk1"),
+        (&encrypted.msg2, "msg2"),
+        (&encrypted.rlax, "rlax"),
+        (&encrypted.opts, "opts"),
+        (&encrypted.text, "text"),
+        (&encrypted.tst2, "tst2"),
+        (&encrypted.chk2, "chk2"),
     ];
 
-    // Emit arrays in random order (Fisher-Yates shuffle — O(n) vs previous O(n·Hn))
+    // Emit arrays in random order (Fisher-Yates shuffle)
     let mut order: [usize; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
     order.shuffle(&mut rng);
 
@@ -280,7 +316,7 @@ pub fn write_c(job: &CompileJob) -> anyhow::Result<String> {
 
     o.flush()?;
 
-    // Restrict permissions on generated C source (contains encrypted script data)
+    // Restrict permissions on generated C source
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o600))?;
 

@@ -3,6 +3,18 @@ name = "rshc"
 version = "1.2.0"
 edition = "2021"
 
+[lib]
+name = "rshc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rshc"
+path = "src/main.rs"
+
+[[bin]]
+name = "rshc-runner"
+path = "src/bin/rshc-runner.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 rand = "0.8"
