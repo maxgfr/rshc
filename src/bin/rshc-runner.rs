@@ -431,6 +431,8 @@ fn exec_stdin_mode(
     if !opts_str.is_empty() {
         cmd.arg(opts_str);
     }
+    // -s tells the shell to read from stdin; remaining args become $1, $2, ...
+    cmd.arg("-s");
     if !lsto_str.is_empty() {
         cmd.arg(lsto_str);
     }
