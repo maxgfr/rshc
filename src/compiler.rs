@@ -46,6 +46,13 @@ pub fn make(file: &str, outfile: Option<&str>, verbose: bool, target: Option<&st
 
     let c_file = format!("{}.x.c", file);
 
+    // Remove existing output file if present (avoids permission/linker errors on overwrite)
+    if std::path::Path::new(&out).exists() {
+        if let Err(e) = std::fs::remove_file(&out) {
+            eprintln!("rshc: warning: could not remove existing {}: {}", out, e);
+        }
+    }
+
     // Build compilation command using safe argument passing (no shell interpolation)
     let mut cmd = Command::new(&cc);
     add_flags(&mut cmd, &cflags);

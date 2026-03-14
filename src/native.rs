@@ -91,6 +91,12 @@ pub fn build_native(
         ],
     };
 
+    // Remove existing output file if present (avoids permission errors on overwrite)
+    if std::path::Path::new(&out).exists() {
+        std::fs::remove_file(&out)
+            .map_err(|e| anyhow::anyhow!("rshc: removing existing {}: {}", out, e))?;
+    }
+
     // Copy runner binary to output
     std::fs::copy(&runner_path, &out)
         .map_err(|e| anyhow::anyhow!("rshc: copying runner to {}: {}", out, e))?;
