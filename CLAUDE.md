@@ -18,8 +18,8 @@ cargo clippy -- -D warnings    # lint
 cargo fmt -- --check           # format check
 
 # Integration tests (requires shells: bash, dash, ksh, zsh, csh, tcsh, rc)
-chmod +x test/ttest.sh
-test/ttest.sh ./target/release/rshc
+chmod +x tests/shell/ttest.sh
+tests/shell/ttest.sh ./target/release/rshc
 ```
 
 Note: ksh tests fail on macOS arm64 due to Apple's bundled ksh93u+ (2012) segfaulting — not an rshc bug.

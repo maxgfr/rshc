@@ -40,8 +40,8 @@ jobs:
 
       - name: Integration tests (ttest.sh)
         run: |
-          chmod +x test/ttest.sh
-          test/ttest.sh ./target/release/rshc
+          chmod +x tests/shell/ttest.sh
+          tests/shell/ttest.sh ./target/release/rshc
 
   clippy:
     runs-on: ubuntu-latest

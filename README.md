@@ -214,8 +214,8 @@ cargo +nightly fuzz run fuzz_payload_from_exe
 cargo +nightly fuzz run fuzz_rc4
 
 # Integration tests with shell (requires shells to be installed)
-chmod +x test/ttest.sh
-test/ttest.sh ./target/release/rshc
+chmod +x tests/shell/ttest.sh
+tests/shell/ttest.sh ./target/release/rshc
 ```
 
 Test coverage includes:
