@@ -75,7 +75,9 @@ pub fn encrypt_script(job: &CompileJob) -> anyhow::Result<EncryptedScript> {
     let mut lsto_bytes: Vec<u8> = job.shell.lsto.as_bytes().to_vec();
     lsto_bytes.push(0);
 
-    let mut tst1: Vec<u8> = b"location has changed!\0".to_vec();
+    // Randomize integrity test strings per build to prevent known-plaintext attacks on RC4
+    let tst1_str = format!("loc_{:016x}\0", rng.gen::<u64>());
+    let mut tst1: Vec<u8> = tst1_str.into_bytes();
     let chk1_plain = tst1.clone();
 
     let mut msg2: Vec<u8> = b"abnormal behavior!\0".to_vec();
@@ -89,7 +91,8 @@ pub fn encrypt_script(job: &CompileJob) -> anyhow::Result<EncryptedScript> {
     let mut text_bytes: Vec<u8> = job.text.to_vec();
     text_bytes.push(0);
 
-    let mut tst2: Vec<u8> = b"shell has changed!\0".to_vec();
+    let tst2_str = format!("shl_{:016x}\0", rng.gen::<u64>());
+    let mut tst2: Vec<u8> = tst2_str.into_bytes();
     let chk2_plain = tst2.clone();
 
     // Generate random password and encrypt
@@ -317,8 +320,11 @@ pub fn write_c(job: &CompileJob) -> anyhow::Result<String> {
     o.flush()?;
 
     // Restrict permissions on generated C source
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o600))?;
+    }
 
     Ok(output_path)
 }

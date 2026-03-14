@@ -18,6 +18,9 @@ use clap::Parser;
         rshc -f script.sh -r                 Make redistributable (no host binding)\n  \
         rshc -f script.sh -UH                Untraceable + hardened binary\n  \
         rshc -f script.sh -n                 Native mode (no C compiler needed)\n  \
+        rshc -f script.sh -n --aes           Native mode with AES-256-GCM\n  \
+        rshc -f script.sh -n -p              Native mode with password protection\n  \
+        rshc -f script.sh -n --compress      Native mode with compression\n  \
         rshc -f script.sh -t x86_64-unknown-linux-musl   Cross-compile for musl"
 )]
 pub struct Cli {
@@ -68,6 +71,16 @@ pub struct Cli {
     #[arg(short = 'S', long = "setuid", help_heading = "Security")]
     pub setuid: bool,
 
+    /// Require password at runtime to decrypt (native mode only)
+    #[arg(
+        short = 'p',
+        long = "password",
+        help_heading = "Security",
+        conflicts_with_all = ["hardening", "busybox", "mmap2", "bind_host"],
+        requires = "native"
+    )]
+    pub password: bool,
+
     // -- Compilation --
     /// Use native Rust runner instead of C compilation (no cc required)
     #[arg(short = 'n', long = "native", help_heading = "Compilation",
@@ -91,6 +104,50 @@ pub struct Cli {
     /// Use the mmap2 system call instead of mmap
     #[arg(short = '2', long = "mmap2", help_heading = "Compilation")]
     pub mmap2: bool,
+
+    /// Use AES-256-GCM encryption instead of RC4 (native mode only)
+    #[arg(long = "aes", help_heading = "Compilation", requires = "native")]
+    pub aes: bool,
+
+    /// Compress script before encryption (native mode only)
+    #[arg(long = "compress", help_heading = "Compilation", requires = "native")]
+    pub compress: bool,
+
+    /// Maximum number of executions allowed (native mode only, 0 = unlimited)
+    #[arg(
+        long = "max-runs",
+        help_heading = "Compilation",
+        value_name = "N",
+        default_value = "0",
+        requires = "native"
+    )]
+    pub max_runs: u32,
+
+    /// Pass script via stdin instead of -c argument (native mode only)
+    #[arg(long = "stdin-mode", help_heading = "Compilation", requires = "native")]
+    pub stdin_mode: bool,
+
+    /// Use ChaCha20-Poly1305 encryption instead of AES-256-GCM (native mode only)
+    #[arg(
+        long = "chacha",
+        help_heading = "Compilation",
+        requires = "native",
+        conflicts_with = "aes"
+    )]
+    pub chacha: bool,
+
+    /// Drop network access before executing the script (Linux only, native mode)
+    #[arg(long = "no-network", help_heading = "Security", requires = "native")]
+    pub no_network: bool,
+
+    /// Bind binary to this host's machine identity (native mode only, incompatible with -p)
+    #[arg(
+        long = "bind-host",
+        help_heading = "Security",
+        requires = "native",
+        conflicts_with = "password"
+    )]
+    pub bind_host: bool,
 
     // -- Shell options --
     /// Inline option passed to the shell interpreter (e.g. -e)

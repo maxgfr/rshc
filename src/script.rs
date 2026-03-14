@@ -1,5 +1,3 @@
-use std::os::unix::fs::PermissionsExt;
-
 use anyhow::{bail, Result};
 
 use crate::shell_db::SHELLS_DB;
@@ -7,11 +5,27 @@ use crate::shell_db::SHELLS_DB;
 /// Resolve a shell name to its full path by searching PATH (pure Rust, no fork/exec).
 fn resolve_shell(name: &str) -> Result<String> {
     let paths = std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("rshc: PATH not set"))?;
+
+    // On Windows, also search for .exe extension
+    #[cfg(windows)]
+    let candidates: Vec<String> = vec![name.to_string(), format!("{}.exe", name)];
+    #[cfg(not(windows))]
+    let candidates: Vec<String> = vec![name.to_string()];
+
     for dir in std::env::split_paths(&paths) {
-        let candidate = dir.join(name);
-        if let Ok(meta) = std::fs::metadata(&candidate) {
-            if meta.is_file() && (meta.permissions().mode() & 0o111) != 0 {
-                return Ok(candidate.to_string_lossy().into_owned());
+        for candidate_name in &candidates {
+            let candidate = dir.join(candidate_name);
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if (meta.permissions().mode() & 0o111) == 0 {
+                            continue;
+                        }
+                    }
+                    return Ok(candidate.to_string_lossy().into_owned());
+                }
             }
         }
     }
@@ -31,8 +45,11 @@ pub struct ShellInfo {
 pub fn read_script(path: &str) -> Result<Vec<u8>> {
     let text = std::fs::read(path).map_err(|e| anyhow::anyhow!("rshc: {}: {}", path, e))?;
 
-    // Check current System ARG_MAX limit
+    // Check current System ARG_MAX limit (Unix only)
+    #[cfg(unix)]
     let arg_max = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
+    #[cfg(not(unix))]
+    let arg_max: i64 = -1; // No ARG_MAX on Windows
     if arg_max > 0 && text.len() as f64 > 0.80 * arg_max as f64 {
         eprintln!(
             "rshc: WARNING!!\n\

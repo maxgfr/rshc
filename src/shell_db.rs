@@ -92,4 +92,23 @@ pub static SHELLS_DB: &[ShellEntry] = &[
         lsto: "",
         xecc: "exec '%s' $argv",
     },
+    // Windows shells (for cross-platform native mode support)
+    ShellEntry {
+        shll: "powershell",
+        inlo: "-Command",
+        lsto: "",
+        xecc: "& '%s' @args",
+    },
+    ShellEntry {
+        shll: "pwsh",
+        inlo: "-Command",
+        lsto: "",
+        xecc: "& '%s' @args",
+    },
+    ShellEntry {
+        shll: "cmd",
+        inlo: "/C",
+        lsto: "",
+        xecc: "\"%s\"",
+    },
 ];

@@ -86,12 +86,15 @@ pub fn make(file: &str, outfile: Option<&str>, verbose: bool, target: Option<&st
     }
 
     // Set permissions: ug=rwx,o=rx (0o775) using Rust API instead of shell
-    use std::os::unix::fs::PermissionsExt;
-    if verbose {
-        eprintln!("rshc: chmod 0775 {}", out);
-    }
-    if let Err(e) = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o775)) {
-        eprintln!("rshc: could not set permissions: {}", e);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if verbose {
+            eprintln!("rshc: chmod 0775 {}", out);
+        }
+        if let Err(e) = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o775)) {
+            eprintln!("rshc: could not set permissions: {}", e);
+        }
     }
 
     Ok(())

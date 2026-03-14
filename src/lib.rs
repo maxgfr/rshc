@@ -1,5 +1,8 @@
+pub mod aes;
+pub mod chacha;
 pub mod payload;
 pub mod rc4;
+pub mod security;
 
 #[cfg(test)]
 mod tests {
@@ -69,27 +72,26 @@ mod tests {
         rc4.arc4(&mut chk2);
 
         // --- Pack into payload ---
-        let payload = Payload {
-            flags: FLAG_TRACEABLE,
-            relax_was_zero: false,
-            arrays: [
-                pswd.clone(),
-                msg1,
-                date,
-                shll,
-                inlo,
-                xecc,
-                lsto,
-                tst1,
-                chk1,
-                msg2,
-                rlax,
-                opts,
-                text,
-                tst2,
-                chk2,
-            ],
-        };
+        let mut payload = Payload::default();
+        payload.flags = FLAG_TRACEABLE;
+        payload.relax_was_zero = false;
+        payload.arrays = [
+            pswd.clone(),
+            msg1,
+            date,
+            shll,
+            inlo,
+            xecc,
+            lsto,
+            tst1,
+            chk1,
+            msg2,
+            rlax,
+            opts,
+            text,
+            tst2,
+            chk2,
+        ];
 
         // Serialize and deserialize
         let mut buf = Vec::new();

@@ -1,0 +1,27 @@
+[package]
+name = "rshc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rshc = { path = ".." }
+
+[[bin]]
+name = "fuzz_payload_deserialize"
+path = "fuzz_targets/fuzz_payload_deserialize.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_payload_from_exe"
+path = "fuzz_targets/fuzz_payload_from_exe.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_rc4"
+path = "fuzz_targets/fuzz_rc4.rs"
+doc = false

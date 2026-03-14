@@ -116,20 +116,39 @@ fn main() -> Result<()> {
 
     if args.native {
         // Native Rust runner path — no C compiler needed
+        let native_opts = native::NativeOptions {
+            aes: args.aes,
+            chacha: args.chacha,
+            password: args.password,
+            compress: args.compress,
+            stdin_mode: args.stdin_mode,
+            max_runs: args.max_runs,
+            no_network: args.no_network,
+            bind_host: args.bind_host,
+        };
+
+        // Pre-process text: compress then AES-encrypt BEFORE RC4
+        let (processed_text, aes_key, aes_nonce) =
+            native::preprocess_text(&text, &native_opts, args.verbose)?;
+
         let job = codegen::CompileJob {
             file,
             date: &date,
             mail: &args.mail,
             shell: &shell_info,
-            text: &text,
+            text: &processed_text,
             relax: args.relax,
             options,
             argv_str: "",
         };
         let encrypted = codegen::encrypt_script(&job)?;
+
         native::build_native(
             &encrypted,
             &job.options,
+            &native_opts,
+            &aes_key,
+            &aes_nonce,
             file,
             args.outfile.as_deref(),
             args.verbose,

@@ -78,6 +78,7 @@ impl Rc4 {
 
     /// Key with file invariants — stat() the shell binary and use stable fields.
     /// Matches key_with_file() in shc.c:963-983.
+    #[cfg(unix)]
     pub fn key_with_file(&mut self, path: &str) -> Result<(), std::io::Error> {
         use std::mem;
 
@@ -107,6 +108,26 @@ impl Rc4 {
             self.key(control_bytes);
         }
 
+        Ok(())
+    }
+
+    /// Windows alternative: key with file metadata (size + timestamps).
+    #[cfg(windows)]
+    pub fn key_with_file(&mut self, path: &str) -> Result<(), std::io::Error> {
+        let meta = std::fs::metadata(path)?;
+        let mut key_data = Vec::new();
+        key_data.extend_from_slice(&meta.len().to_le_bytes());
+        if let Ok(modified) = meta.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                key_data.extend_from_slice(&duration.as_secs().to_le_bytes());
+            }
+        }
+        if let Ok(created) = meta.created() {
+            if let Ok(duration) = created.duration_since(std::time::UNIX_EPOCH) {
+                key_data.extend_from_slice(&duration.as_secs().to_le_bytes());
+            }
+        }
+        self.key(&key_data);
         Ok(())
     }
 }

@@ -61,6 +61,15 @@ jobs:
           components: rustfmt
       - run: cargo fmt -- --check
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Audit dependencies
+        run: cargo audit
+
   macos:
     runs-on: macos-latest
     steps:
