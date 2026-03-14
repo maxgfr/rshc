@@ -3,86 +3,120 @@ use chrono::{Local, NaiveDate, TimeZone};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "rshc", version, about = "Generic Shell Script Compiler")]
+#[command(
+    name = "rshc",
+    version,
+    about = "Generic Shell Script Compiler",
+    long_about = "rshc compiles shell scripts into encrypted binaries.\n\n\
+        The compiled binary decrypts and executes the original script at runtime, \
+        protecting the source code from being read directly. Supports bash, zsh, dash, \
+        ksh, fish, csh, tcsh, perl, python, ruby, node, rc, and more.",
+    after_help = "\x1b[1mExamples:\x1b[0m\n  \
+        rshc -f script.sh                    Compile script.sh → script.sh.x\n  \
+        rshc -f script.sh -o binary          Compile with custom output name\n  \
+        rshc -f script.sh -e 01/01/2026      Set expiration date\n  \
+        rshc -f script.sh -r                 Make redistributable (no host binding)\n  \
+        rshc -f script.sh -UH                Untraceable + hardened binary\n  \
+        rshc -f script.sh -n                 Native mode (no C compiler needed)\n  \
+        rshc -f script.sh -t x86_64-unknown-linux-musl   Cross-compile for musl",
+)]
 pub struct Cli {
-    /// Expiration date in dd/mm/yyyy format
-    #[arg(short = 'e')]
-    pub expiry: Option<String>,
+    // -- Input / Output --
 
-    /// Message to display upon expiration
-    #[arg(
-        short = 'm',
-        default_value = "Please contact your provider jahidulhamid@yahoo.com"
-    )]
-    pub mail: String,
-
-    /// File name of the script to compile
-    #[arg(short = 'f', required_unless_present_any = ["show_license", "show_abstract"])]
+    /// Shell script file to compile
+    #[arg(short = 'f', long = "file", help_heading = "Input/Output",
+          required_unless_present_any = ["show_license", "show_abstract"])]
     pub file: Option<String>,
 
-    /// Inline option for the shell interpreter i.e: -e
-    #[arg(short = 'i')]
-    pub iopt: Option<String>,
-
-    /// eXec command, as a printf format i.e: exec('%s',@ARGV);
-    #[arg(short = 'x')]
-    pub xecc: Option<String>,
-
-    /// Last shell option i.e: --
-    #[arg(short = 'l')]
-    pub lopt: Option<String>,
-
-    /// Output filename
-    #[arg(short = 'o')]
+    /// Output binary path [default: <file>.x]
+    #[arg(short = 'o', long = "output", help_heading = "Input/Output")]
     pub outfile: Option<String>,
 
-    /// Relax security. Make a redistributable binary
-    #[arg(short = 'r')]
+    // -- Expiration --
+
+    /// Set expiration date (format: dd/mm/yyyy)
+    #[arg(short = 'e', long = "expiry", help_heading = "Expiration",
+          value_name = "DATE")]
+    pub expiry: Option<String>,
+
+    /// Message shown when the binary has expired
+    #[arg(short = 'm', long = "message", help_heading = "Expiration",
+          value_name = "TEXT",
+          default_value = "Please contact your provider jahidulhamid@yahoo.com")]
+    pub mail: String,
+
+    // -- Security --
+
+    /// Make a redistributable binary (skip host-specific binding)
+    #[arg(short = 'r', long = "relax", help_heading = "Security")]
     pub relax: bool,
 
-    /// Verbose compilation
-    #[arg(short = 'v')]
-    pub verbose: bool,
-
-    /// Switch ON setuid for root callable programs
-    #[arg(short = 'S')]
-    pub setuid: bool,
-
-    /// Switch ON debug exec calls
-    #[arg(short = 'D')]
-    pub debugexec: bool,
-
-    /// Make binary untraceable
-    #[arg(short = 'U')]
+    /// Make binary untraceable (anti-debugging)
+    #[arg(short = 'U', long = "untraceable", help_heading = "Security")]
     pub untraceable: bool,
 
-    /// Hardening: extra security protection
-    #[arg(short = 'H')]
+    /// Enable extra hardening protections
+    #[arg(short = 'H', long = "hardening", help_heading = "Security")]
     pub hardening: bool,
 
+    /// Enable setuid for root-callable programs
+    #[arg(short = 'S', long = "setuid", help_heading = "Security")]
+    pub setuid: bool,
+
+    // -- Compilation --
+
+    /// Use native Rust runner instead of C compilation (no cc required)
+    #[arg(short = 'n', long = "native", help_heading = "Compilation",
+          conflicts_with_all = ["hardening", "busybox", "mmap2"])]
+    pub native: bool,
+
+    /// Cross-compilation target triple (e.g. x86_64-unknown-linux-musl)
+    #[arg(short = 't', long = "target", help_heading = "Compilation",
+          value_name = "TRIPLE", conflicts_with = "native")]
+    pub target: Option<String>,
+
+    /// Compile for busybox environment
+    #[arg(short = 'B', long = "busybox", help_heading = "Compilation")]
+    pub busybox: bool,
+
+    /// Use the mmap2 system call instead of mmap
+    #[arg(short = '2', long = "mmap2", help_heading = "Compilation")]
+    pub mmap2: bool,
+
+    // -- Shell options --
+
+    /// Inline option passed to the shell interpreter (e.g. -e)
+    #[arg(short = 'i', long = "inline-opt", help_heading = "Shell Options",
+          value_name = "OPT")]
+    pub iopt: Option<String>,
+
+    /// Exec command as a printf format (e.g. "exec('%s',@ARGV);")
+    #[arg(short = 'x', long = "exec-cmd", help_heading = "Shell Options",
+          value_name = "FMT")]
+    pub xecc: Option<String>,
+
+    /// Last shell option before the script (e.g. --)
+    #[arg(short = 'l', long = "last-opt", help_heading = "Shell Options",
+          value_name = "OPT")]
+    pub lopt: Option<String>,
+
+    // -- Debug & Info --
+
+    /// Enable verbose compilation output
+    #[arg(short = 'v', long = "verbose", help_heading = "Debug & Info")]
+    pub verbose: bool,
+
+    /// Enable debug exec calls
+    #[arg(short = 'D', long = "debug-exec", help_heading = "Debug & Info")]
+    pub debugexec: bool,
+
     /// Display license and exit
-    #[arg(short = 'C')]
+    #[arg(short = 'C', long = "license", help_heading = "Debug & Info")]
     pub show_license: bool,
 
     /// Display abstract and exit
-    #[arg(short = 'A')]
+    #[arg(short = 'A', long = "abstract", help_heading = "Debug & Info")]
     pub show_abstract: bool,
-
-    /// Compile for busybox
-    #[arg(short = 'B')]
-    pub busybox: bool,
-
-    /// Use the system call mmap2
-    #[arg(short = '2')]
-    pub mmap2: bool,
-
-    /// Cross-compilation target triple (e.g. x86_64-unknown-linux-musl)
-    #[arg(short = 't', long = "target", conflicts_with = "native")]
-    pub target: Option<String>,
-
-    /// Use native Rust runner instead of C compilation (no cc required)
-    #[arg(short = 'n', long = "native", conflicts_with_all = ["hardening", "busybox", "mmap2"])]
-    pub native: bool,
 }
 
 /// Parse a dd/mm/yyyy date string into a Unix timestamp string.
