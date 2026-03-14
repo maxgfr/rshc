@@ -18,11 +18,10 @@ use clap::Parser;
         rshc -f script.sh -r                 Make redistributable (no host binding)\n  \
         rshc -f script.sh -UH                Untraceable + hardened binary\n  \
         rshc -f script.sh -n                 Native mode (no C compiler needed)\n  \
-        rshc -f script.sh -t x86_64-unknown-linux-musl   Cross-compile for musl",
+        rshc -f script.sh -t x86_64-unknown-linux-musl   Cross-compile for musl"
 )]
 pub struct Cli {
     // -- Input / Output --
-
     /// Shell script file to compile
     #[arg(short = 'f', long = "file", help_heading = "Input/Output",
           required_unless_present_any = ["show_license", "show_abstract"])]
@@ -33,20 +32,26 @@ pub struct Cli {
     pub outfile: Option<String>,
 
     // -- Expiration --
-
     /// Set expiration date (format: dd/mm/yyyy)
-    #[arg(short = 'e', long = "expiry", help_heading = "Expiration",
-          value_name = "DATE")]
+    #[arg(
+        short = 'e',
+        long = "expiry",
+        help_heading = "Expiration",
+        value_name = "DATE"
+    )]
     pub expiry: Option<String>,
 
     /// Message shown when the binary has expired
-    #[arg(short = 'm', long = "message", help_heading = "Expiration",
-          value_name = "TEXT",
-          default_value = "Please contact your provider jahidulhamid@yahoo.com")]
+    #[arg(
+        short = 'm',
+        long = "message",
+        help_heading = "Expiration",
+        value_name = "TEXT",
+        default_value = "Please contact your provider jahidulhamid@yahoo.com"
+    )]
     pub mail: String,
 
     // -- Security --
-
     /// Make a redistributable binary (skip host-specific binding)
     #[arg(short = 'r', long = "relax", help_heading = "Security")]
     pub relax: bool,
@@ -64,15 +69,19 @@ pub struct Cli {
     pub setuid: bool,
 
     // -- Compilation --
-
     /// Use native Rust runner instead of C compilation (no cc required)
     #[arg(short = 'n', long = "native", help_heading = "Compilation",
           conflicts_with_all = ["hardening", "busybox", "mmap2"])]
     pub native: bool,
 
     /// Cross-compilation target triple (e.g. x86_64-unknown-linux-musl)
-    #[arg(short = 't', long = "target", help_heading = "Compilation",
-          value_name = "TRIPLE", conflicts_with = "native")]
+    #[arg(
+        short = 't',
+        long = "target",
+        help_heading = "Compilation",
+        value_name = "TRIPLE",
+        conflicts_with = "native"
+    )]
     pub target: Option<String>,
 
     /// Compile for busybox environment
@@ -84,24 +93,34 @@ pub struct Cli {
     pub mmap2: bool,
 
     // -- Shell options --
-
     /// Inline option passed to the shell interpreter (e.g. -e)
-    #[arg(short = 'i', long = "inline-opt", help_heading = "Shell Options",
-          value_name = "OPT")]
+    #[arg(
+        short = 'i',
+        long = "inline-opt",
+        help_heading = "Shell Options",
+        value_name = "OPT"
+    )]
     pub iopt: Option<String>,
 
     /// Exec command as a printf format (e.g. "exec('%s',@ARGV);")
-    #[arg(short = 'x', long = "exec-cmd", help_heading = "Shell Options",
-          value_name = "FMT")]
+    #[arg(
+        short = 'x',
+        long = "exec-cmd",
+        help_heading = "Shell Options",
+        value_name = "FMT"
+    )]
     pub xecc: Option<String>,
 
     /// Last shell option before the script (e.g. --)
-    #[arg(short = 'l', long = "last-opt", help_heading = "Shell Options",
-          value_name = "OPT")]
+    #[arg(
+        short = 'l',
+        long = "last-opt",
+        help_heading = "Shell Options",
+        value_name = "OPT"
+    )]
     pub lopt: Option<String>,
 
     // -- Debug & Info --
-
     /// Enable verbose compilation output
     #[arg(short = 'v', long = "verbose", help_heading = "Debug & Info")]
     pub verbose: bool,
