@@ -26,7 +26,7 @@ pub struct NativeOptions {
 }
 
 /// Find the rshc-runner binary alongside the current executable.
-/// Verifies the binary is not a symlink to prevent binary substitution attacks.
+/// Resolves symlinks (Homebrew installs via symlinks) and returns the canonical path.
 fn find_runner() -> Result<std::path::PathBuf> {
     let exe = std::env::current_exe()
         .map_err(|e| anyhow::anyhow!("rshc: cannot find own executable: {}", e))?;
@@ -40,9 +40,11 @@ fn find_runner() -> Result<std::path::PathBuf> {
             runner.display()
         );
     }
-    // Verify the runner is not a symlink
-    security::verify_not_symlink(&runner).map_err(|e| anyhow::anyhow!("rshc: {}", e))?;
-    Ok(runner)
+    // Resolve symlinks to get the real path (Homebrew uses symlinks from /opt/homebrew/bin/)
+    let resolved = runner
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("rshc: cannot resolve {}: {}", runner.display(), e))?;
+    Ok(resolved)
 }
 
 /// Pre-process script text before encryption: compress, then AES-encrypt.
