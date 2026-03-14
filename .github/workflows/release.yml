@@ -18,12 +18,15 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: rshc-linux-x64
+            runner_artifact: rshc-runner-linux-x64
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: rshc-macos-x64
+            runner_artifact: rshc-runner-macos-x64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: rshc-macos-arm64
+            runner_artifact: rshc-runner-macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -36,14 +39,18 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/rshc ${{ matrix.artifact }}
+      - name: Rename binaries
+        run: |
+          cp target/${{ matrix.target }}/release/rshc ${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/rshc-runner ${{ matrix.runner_artifact }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.runner_artifact }}
 
   release:
     needs: build
@@ -63,8 +70,11 @@ jobs:
         run: |
           mkdir -p binaries
           cp artifacts/rshc-linux-x64/rshc-linux-x64 binaries/
+          cp artifacts/rshc-linux-x64/rshc-runner-linux-x64 binaries/
           cp artifacts/rshc-macos-x64/rshc-macos-x64 binaries/
+          cp artifacts/rshc-macos-x64/rshc-runner-macos-x64 binaries/
           cp artifacts/rshc-macos-arm64/rshc-macos-arm64 binaries/
+          cp artifacts/rshc-macos-arm64/rshc-runner-macos-arm64 binaries/
           chmod +x binaries/*
 
       - name: Release
@@ -86,6 +96,6 @@ jobs:
         if: steps.get_tag.outputs.tag != ''
         run: |
           TAG="${{ steps.get_tag.outputs.tag }}"
-          gh release upload "$TAG" binaries/rshc-linux-x64 binaries/rshc-macos-x64 binaries/rshc-macos-arm64 --clobber
+          gh release upload "$TAG" binaries/rshc-linux-x64 binaries/rshc-runner-linux-x64 binaries/rshc-macos-x64 binaries/rshc-runner-macos-x64 binaries/rshc-macos-arm64 binaries/rshc-runner-macos-arm64 --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
