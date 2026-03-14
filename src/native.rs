@@ -101,6 +101,10 @@ pub fn build_native(
     std::fs::copy(&runner_path, &out)
         .map_err(|e| anyhow::anyhow!("rshc: copying runner to {}: {}", out, e))?;
 
+    // Make writable before appending (copy preserves source permissions which may be read-only)
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| anyhow::anyhow!("rshc: setting permissions on {}: {}", out, e))?;
+
     // Append payload
     let mut f = std::fs::OpenOptions::new()
         .append(true)
