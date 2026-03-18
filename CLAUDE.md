@@ -14,13 +14,15 @@ Security hardening features in native mode inspired by [chenyukang/rshc](https:/
 ```bash
 cargo build --release          # builds both rshc and rshc-runner
 cargo test                     # unit + integration tests (117 tests)
-cargo clippy -- -D warnings    # lint
+cargo clippy -- -D warnings    # lint — MUST pass before pushing (CI enforces -D warnings)
 cargo fmt -- --check           # format check
 
 # Integration tests (requires shells: bash, dash, ksh, zsh, csh, tcsh, rc)
 chmod +x tests/shell/ttest.sh
 tests/shell/ttest.sh ./target/release/rshc
 ```
+
+**Important**: Always run `cargo clippy -- -D warnings` locally before pushing. The CI runs clippy on Linux x86_64 which may have different lint behavior than macOS (e.g. `unsafe` blocks for intrinsics like `__cpuid`/`_rdtsc` that are safe on newer Rust versions). Use `#[allow(unused_unsafe)]` for cross-version compatibility.
 
 Note: ksh tests fail on macOS arm64 due to Apple's bundled ksh93u+ (2012) segfaulting — not an rshc bug.
 

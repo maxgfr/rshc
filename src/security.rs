@@ -524,7 +524,10 @@ pub fn detect_parent_debugger() -> bool {
 /// Debugger single-stepping adds thousands of cycles per instruction.
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_timestamp() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
+    #[allow(unused_unsafe)]
+    unsafe {
+        core::arch::x86_64::_rdtsc()
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -538,6 +541,7 @@ pub fn rdtsc_timestamp() -> u64 {
 /// but catches single-stepping.
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_check_elapsed(start: u64, max_cycles: u64) -> bool {
+    #[allow(unused_unsafe)]
     let end = unsafe { core::arch::x86_64::_rdtsc() };
     end.wrapping_sub(start) > max_cycles
 }
@@ -655,10 +659,9 @@ pub fn install_seccomp_filter() -> bool {
 /// This bit is set by all major hypervisors (VMware, VirtualBox, KVM, Hyper-V, Xen).
 #[cfg(target_arch = "x86_64")]
 pub fn detect_vm() -> bool {
-    unsafe {
-        let result = core::arch::x86_64::__cpuid(1);
-        result.ecx & (1 << 31) != 0
-    }
+    #[allow(unused_unsafe)]
+    let result = unsafe { core::arch::x86_64::__cpuid(1) };
+    result.ecx & (1 << 31) != 0
 }
 
 /// Linux non-x86_64: check DMI/SMBIOS for VM identifiers.
