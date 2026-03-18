@@ -13,7 +13,7 @@ Security hardening features in native mode inspired by [chenyukang/rshc](https:/
 
 ```bash
 cargo build --release          # builds both rshc and rshc-runner
-cargo test                     # unit + integration tests (80+ tests)
+cargo test                     # unit + integration tests (117 tests)
 cargo clippy -- -D warnings    # lint
 cargo fmt -- --check           # format check
 
@@ -28,7 +28,7 @@ Note: ksh tests fail on macOS arm64 due to Apple's bundled ksh93u+ (2012) segfau
 
 ```
 src/
-  lib.rs        — Library crate: exports rc4, payload, aes, security (shared between rshc and rshc-runner)
+  lib.rs        — Library crate: exports rc4, payload, aes, chacha, security (shared between rshc and rshc-runner)
   main.rs       — Entry point, orchestrates the pipeline (classic or native)
   cli.rs        — CLI arg parsing (clap derive), expiry date parsing
   script.rs     — Script reading, shebang parsing, #!/usr/bin/env resolution
@@ -40,12 +40,13 @@ src/
   compiler.rs   — Invokes cc/strip/chmod, cross-compilation support
   payload.rs    — Binary payload format V2: serialize/deserialize with trailer pattern + extended fields
   aes.rs        — AES-256-GCM encryption/decryption + key derivation
-  security.rs   — Anti-debug, memory zeroing, XOR obfuscation, SHA-256 hashing, password handling, integrity verification
+  chacha.rs     — ChaCha20-Poly1305 encryption/decryption
+  security.rs   — Anti-debug (multi-layer), memory protection, constant-time ops, seccomp-BPF, VM detection, ProtectedBuffer, SHA-256, password handling
   rtc_code.c    — Embedded C runtime (~600 lines, included via include_str!)
   bin/
-    rshc-runner.rs — Native runner binary: reads payload, decrypts (RC4+AES), decompresses, execvp
+    rshc-runner.rs — Native runner binary: reads payload, multi-layer anti-debug, decrypts (RC4+AES), decompresses, protected memory, execvp
 tests/
-  integration.rs — Full pipeline integration tests using assert_cmd
+  integration.rs — Full pipeline integration tests using assert_cmd (36 tests)
 ```
 
 **Classic pipeline**: parse CLI → read script → parse shebang → encrypt_script() → emit C file with random-ordered data[] → compile with cc → strip
@@ -64,22 +65,54 @@ tests/
 
 ## Native mode V2 features
 
+### Encryption layers
+
 - **AES-256-GCM** (`--aes`): Additional encryption layer on top of RC4. Key stored in extended pswd array.
-- **Password protection** (`-p`): SHA-256 hashed password with salt, verified at runtime before decryption.
+- **ChaCha20-Poly1305** (`--chacha`): Alternative AEAD cipher, faster on ARM/CPUs without AES-NI.
+- **Password protection** (`-p`): Argon2id-hashed password with salt, verified at runtime with constant-time comparison.
 - **Compression** (`--compress`): Deflate compression of script text before encryption. Applied before AES, decompressed after AES decrypt in runner.
+
+### Anti-debug & anti-analysis (multi-layer)
+
+1. **ptrace detection**: PTRACE_TRACEME (Linux), PT_DENY_ATTACH (macOS)
+2. **SIGTRAP handler test** (via sigaction): installs handler, raises SIGTRAP — debuggers intercept the signal so the handler never fires
+3. **Frida detection**: scans /proc/self/maps for Frida artifacts + checks thread names (gum-js-loop, gmain, gdbus)
+4. **Parent process inspection**: checks /proc/<ppid>/comm for known debuggers (gdb, lldb, strace, ltrace, radare2...)
+5. **P_TRACED flag (macOS)**: sysctl-based trace detection using raw kinfo_proc
+6. **TracerPid monitoring**: /proc/self/status check (Linux)
+7. **Environment injection detection**: LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, GCONV_PATH, sanitizer options, DYLD_* vars
+8. **RDTSC timing** (x86_64): CPU cycle counter detects single-stepping — impossible to fake without hardware modification
+9. **Timer-based anti-debug**: wall-clock timing detects single-stepping (30s threshold)
+10. **Seccomp-BPF** (Linux): after anti-debug checks pass, installs kernel-level filter blocking ptrace, process_vm_readv, process_vm_writev — prevents debugger attachment post-verification
+11. **VM detection** (`--anti-vm`): CPUID hypervisor bit (x86_64) + DMI/SMBIOS checks (Linux)
+12. **Core dump prevention**: RLIMIT_CORE=0 + PR_SET_DUMPABLE=0
+13. **PR_SET_MDWE** (Linux 6.3+): deny write-execute memory — prevents code injection attacks
+
+### Memory protection
+
+- **ProtectedBuffer**: mmap-backed, page-aligned memory region for decrypted script text
+  - Tries `memfd_secret` first (Linux 5.14+) for kernel-invisible memory — not accessible even to root via /proc/pid/mem
+  - Falls back to regular mmap with `mlock()` (prevents swap) + `MADV_DONTDUMP` (excludes from core dumps)
+  - `mprotect(PROT_NONE)` makes pages inaccessible between decryption and execution
+  - `mprotect(PROT_READ)` re-enables access only at the instant of execution
+  - On drop: secure zero + munlock + munmap
+- **zeroize**: All sensitive buffers (keys, passwords, decrypted text) zeroed with volatile writes after use
+- **Constant-time comparisons**: `subtle::ConstantTimeEq` for all password hash, integrity hash, and host binding comparisons — prevents timing side-channel attacks
+
+### Other features
+
 - **Stdin mode** (`--stdin-mode`): Pipes script via stdin instead of -c argument to hide from /proc/*/cmdline.
 - **Max runs** (`--max-runs N`): Execution counter stored in .runs file alongside binary.
-- **Anti-debug**: PTRACE_TRACEME (Linux), PT_DENY_ATTACH (macOS), TracerPid check, LD_PRELOAD/DYLD_INSERT_LIBRARIES detection.
-- **Memory zeroing**: All sensitive buffers zeroed with `zeroize` after use.
+- **Host binding** (`--bind-host`): Binary bound to machine identity (hostname + machine-id/hardware UUID).
+- **Network isolation** (`--no-network`): Linux unshare(CLONE_NEWNET) drops all network access before script execution.
 - **Binary integrity**: SHA-256 hash of runner binary verified at startup.
-- **XOR string obfuscation**: Error messages encoded to avoid plaintext in binary.
-- **Core dump prevention**: RLIMIT_CORE=0 + PR_SET_DUMPABLE=0 for untraceable binaries.
+- **Compile-time string encryption** (`obfstr`): all error messages encrypted at compile time with per-string random keys — zero plaintext in the binary (verified with `strings`). Replaces the old XOR approach.
 - **Debug exec** (`-D`): Prints exec details when flag is set.
 
 ### Pre-processing order
 
 Build: raw_text → compress → AES encrypt → RC4 encrypt (via encrypt_script)
-Runner: RC4 decrypt → strip \0 sentinel → AES decrypt → decompress → execute
+Runner: RC4 decrypt → strip \0 sentinel → AES decrypt → decompress → ProtectedBuffer → execute
 
 ## Payload V2 format
 
@@ -91,7 +124,17 @@ Runner: RC4 decrypt → strip \0 sentinel → AES decrypt → decompress → exe
 [array_sizes (15 * 4 LE)] [array_data...] [payload_size (8 LE)]
 ```
 
+ext_flags bits: AES(0x01), PASSWORD(0x02), COMPRESSED(0x04), STDIN_MODE(0x08), CHACHA(0x10), NO_NETWORK(0x20), BIND_HOST(0x40), ANTI_VM(0x80)
+
 Backward compatible: reader detects V1 magic and skips extended fields.
+
+## Release profile
+
+Release binaries are compiled with:
+- `panic = "abort"` — no unwind info, reduces binary size and eliminates source path leakage from panic messages
+- `strip = true` — removes all symbol tables and debug info
+- `lto = true` — link-time optimization merges all crates into a single compilation unit, making the binary harder to analyze
+- `codegen-units = 1` — single codegen unit for maximum LTO effectiveness and reduced timing side-channels
 
 ## Versioning
 

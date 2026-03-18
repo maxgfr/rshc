@@ -5,9 +5,9 @@ use std::os::unix::fs::PermissionsExt;
 use anyhow::{bail, Result};
 
 use rshc::payload::{
-    Payload, FLAG_BUSYBOX, FLAG_DEBUGEXEC, FLAG_EXT_AES, FLAG_EXT_BIND_HOST, FLAG_EXT_CHACHA,
-    FLAG_EXT_COMPRESSED, FLAG_EXT_NO_NETWORK, FLAG_EXT_PASSWORD, FLAG_EXT_STDIN_MODE,
-    FLAG_HARDENING, FLAG_MMAP2, FLAG_SETUID, FLAG_TRACEABLE,
+    Payload, FLAG_BUSYBOX, FLAG_DEBUGEXEC, FLAG_EXT_AES, FLAG_EXT_ANTI_VM, FLAG_EXT_BIND_HOST,
+    FLAG_EXT_CHACHA, FLAG_EXT_COMPRESSED, FLAG_EXT_NO_NETWORK, FLAG_EXT_PASSWORD,
+    FLAG_EXT_STDIN_MODE, FLAG_HARDENING, FLAG_MMAP2, FLAG_SETUID, FLAG_TRACEABLE,
 };
 use rshc::security;
 
@@ -23,6 +23,7 @@ pub struct NativeOptions {
     pub max_runs: u32,
     pub no_network: bool,
     pub bind_host: bool,
+    pub anti_vm: bool,
 }
 
 /// Find the rshc-runner binary alongside the current executable.
@@ -167,6 +168,9 @@ pub fn build_native(
     if native_opts.bind_host {
         ext_flags |= FLAG_EXT_BIND_HOST;
     }
+    if native_opts.anti_vm {
+        ext_flags |= FLAG_EXT_ANTI_VM;
+    }
 
     // Handle password and/or bind-host
     let mut password_salt = [0u8; 32];
@@ -297,6 +301,9 @@ pub fn build_native(
         }
         if native_opts.bind_host {
             eprintln!("rshc: host binding enabled");
+        }
+        if native_opts.anti_vm {
+            eprintln!("rshc: anti-VM detection enabled");
         }
         if native_opts.max_runs > 0 {
             eprintln!("rshc: max runs: {}", native_opts.max_runs);

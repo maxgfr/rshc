@@ -4,15 +4,19 @@
 //! payload to the end. At runtime, the runner reads the payload from its
 //! own executable, decrypts the script, and exec's the target shell.
 //!
-//! V2 features inspired by chenyukang/rshc (https://github.com/chenyukang/rshc):
-//! - Anti-debug detection (ptrace, env injection, TracerPid, timer-based)
-//! - Memory zeroing for sensitive data (zeroize)
-//! - Stdin piping (hide script from /proc/*/cmdline)
+//! Security features:
+//! - Multi-layer anti-debug (ptrace, SIGTRAP, Frida, parent process, env injection, TracerPid, RDTSC timing)
+//! - Seccomp-BPF syscall filtering (blocks ptrace, process_vm_readv/writev)
+//! - Constant-time comparisons for all secret data (prevents timing attacks)
+//! - mmap-backed protected memory with PROT_NONE/PROT_READ toggling
+//! - Memory zeroing for all sensitive data (zeroize)
 //! - Binary self-integrity check (SHA-256)
-//! - AES-256-GCM encryption (on top of RC4)
+//! - AES-256-GCM / ChaCha20-Poly1305 encryption (on top of RC4)
 //! - Password protection (Argon2id hash verification)
 //! - Script compression (deflate)
 //! - Max execution count (with file locking)
+//! - VM/hypervisor detection (CPUID / DMI)
+//! - Core dump prevention (RLIMIT_CORE + PR_SET_DUMPABLE)
 //! - Cross-platform support (Unix + Windows)
 
 use std::env;
@@ -24,20 +28,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
 
 use rshc::payload::{
-    self, Payload, FLAG_DEBUGEXEC, FLAG_EXT_AES, FLAG_EXT_BIND_HOST, FLAG_EXT_CHACHA,
-    FLAG_EXT_COMPRESSED, FLAG_EXT_NO_NETWORK, FLAG_EXT_PASSWORD, FLAG_EXT_STDIN_MODE, FLAG_SETUID,
-    FLAG_TRACEABLE,
+    self, Payload, FLAG_DEBUGEXEC, FLAG_EXT_AES, FLAG_EXT_ANTI_VM, FLAG_EXT_BIND_HOST,
+    FLAG_EXT_CHACHA, FLAG_EXT_COMPRESSED, FLAG_EXT_NO_NETWORK, FLAG_EXT_PASSWORD,
+    FLAG_EXT_STDIN_MODE, FLAG_SETUID, FLAG_TRACEABLE,
 };
 use rshc::rc4::Rc4;
 use rshc::security;
-
-/// XOR obfuscation key for error messages in the binary.
-const XOR_KEY: u8 = 0x5A;
-
-/// Get an XOR-obfuscated error message at runtime.
-fn obfuscated_msg(encoded: &[u8]) -> String {
-    String::from_utf8_lossy(&security::xor_decode(encoded, XOR_KEY)).to_string()
-}
 
 fn die(me: &str, msg: &str) -> ! {
     eprintln!("{}: {}", me, msg);
@@ -45,8 +41,9 @@ fn die(me: &str, msg: &str) -> ! {
 }
 
 fn main() {
-    // Start anti-debug timer (detects single-stepping)
+    // Start anti-debug timers (wall-clock + CPU cycle counter)
     let timer = security::anti_debug_timer_start();
+    let rdtsc_start = security::rdtsc_timestamp();
 
     let args: Vec<String> = env::args().collect();
     let me = args
@@ -77,18 +74,41 @@ fn main() {
     if payload.flags & FLAG_TRACEABLE == 0 {
         // Disable core dumps and verify success
         if !security::disable_core_dump() {
-            let msg = obfuscated_msg(&security::xor_encode(b"cannot disable core dumps", XOR_KEY));
-            die(&me, &msg);
+            die(&me, obfstr::obfstr!("cannot disable core dumps"));
         }
 
         // Prevent privilege escalation via setuid binaries
         security::set_no_new_privs();
 
-        // Detect debugger
+        // Multi-layer debugger detection:
+        // 1. ptrace (PTRACE_TRACEME / PT_DENY_ATTACH)
+        // 2. Environment injection (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.)
+        // 3. TracerPid in /proc/self/status (Linux)
+        // 4. SIGTRAP handler test (signal-based, catches GDB/LLDB)
+        // 5. Frida detection (/proc/self/maps + thread names)
+        // 6. Parent process name check (detects gdb, strace, etc.)
         if security::detect_debugger() {
-            let msg = obfuscated_msg(&security::xor_encode(b"debugger detected", XOR_KEY));
-            die(&me, &msg);
+            die(&me, obfstr::obfstr!("debugger detected"));
         }
+
+        // RDTSC timing check: single-stepping adds thousands of cycles
+        // Check after anti-debug (which involves syscalls) but threshold is generous
+        if security::rdtsc_check_elapsed(rdtsc_start, 500_000_000) {
+            die(&me, obfstr::obfstr!("timing anomaly"));
+        }
+
+        // Deny write-execute memory (Linux 6.3+): prevents code injection
+        security::deny_write_execute();
+
+        // Install seccomp-BPF filter AFTER anti-debug checks
+        // Blocks: ptrace, process_vm_readv, process_vm_writev
+        // This prevents debugger attachment after our checks pass
+        security::install_seccomp_filter();
+    }
+
+    // Anti-VM detection (opt-in via --anti-vm flag)
+    if payload.ext_flags & FLAG_EXT_ANTI_VM != 0 && security::detect_vm() {
+        die(&me, obfstr::obfstr!("unsupported environment"));
     }
 
     // Verify binary integrity (SHA-256 of runner portion)
@@ -96,41 +116,30 @@ fn main() {
         match security::verify_binary_integrity(&exe_path, &payload.integrity_hash) {
             Ok(true) => {}
             Ok(false) => {
-                let msg = obfuscated_msg(&security::xor_encode(
-                    b"binary integrity check failed",
-                    XOR_KEY,
-                ));
-                die(&me, &msg);
+                die(&me, obfstr::obfstr!("binary integrity check failed"));
             }
             Err(_) => {
-                let msg = obfuscated_msg(&security::xor_encode(
-                    b"cannot verify binary integrity",
-                    XOR_KEY,
-                ));
-                die(&me, &msg);
+                die(&me, obfstr::obfstr!("cannot verify binary integrity"));
             }
         }
     }
 
-    // Password protection (Argon2id)
+    // Password protection (Argon2id) — constant-time comparison
     if payload.ext_flags & FLAG_EXT_PASSWORD != 0 {
         let password = security::read_password("Password: ").unwrap_or_else(|e| {
             die(&me, &format!("cannot read password: {}", e));
         });
         let hash = security::hash_password(password.as_bytes(), &payload.password_salt);
-        if hash != payload.password_hash {
-            let msg = obfuscated_msg(&security::xor_encode(b"wrong password", XOR_KEY));
-            die(&me, &msg);
+        if !security::constant_time_eq(&hash, &payload.password_hash) {
+            die(&me, obfstr::obfstr!("wrong password"));
         }
     }
 
-    // Host binding check: verify machine identity matches build-time identity
-    // Machine ID is stored in password_salt when password is not used
+    // Host binding check — constant-time comparison
     if payload.ext_flags & FLAG_EXT_BIND_HOST != 0 && payload.ext_flags & FLAG_EXT_PASSWORD == 0 {
         let current_identity = security::get_machine_identity();
-        if current_identity != payload.password_salt {
-            let msg = obfuscated_msg(&security::xor_encode(b"host binding mismatch", XOR_KEY));
-            die(&me, &msg);
+        if !security::constant_time_eq(&current_identity, &payload.password_salt) {
+            die(&me, obfstr::obfstr!("host binding mismatch"));
         }
     }
 
@@ -143,13 +152,7 @@ fn main() {
     if payload.ext_flags & FLAG_EXT_NO_NETWORK != 0 && !security::drop_network() {
         // Fatal on Linux (where unshare should work), non-fatal on other platforms
         #[cfg(target_os = "linux")]
-        {
-            let msg = obfuscated_msg(&security::xor_encode(
-                b"cannot drop network access",
-                XOR_KEY,
-            ));
-            die(&me, &msg);
-        }
+        die(&me, obfstr::obfstr!("cannot drop network access"));
     }
 
     // setuid(0) if requested (Unix only)
@@ -225,10 +228,10 @@ fn main() {
     rc4.arc4(&mut lsto);
     rc4.arc4(&mut tst1);
 
-    // Integrity check 1: key with decrypted tst1, decrypt chk1, compare
+    // Integrity check 1 — constant-time comparison
     rc4.key(&tst1);
     rc4.arc4(&mut chk1);
-    if chk1.len() != tst1.len() || chk1 != tst1 {
+    if !security::constant_time_eq(&chk1, &tst1) {
         let msg = bytes_to_str(&tst1);
         die(&me, &msg);
     }
@@ -249,10 +252,10 @@ fn main() {
     rc4.arc4(&mut text);
     rc4.arc4(&mut tst2);
 
-    // Integrity check 2
+    // Integrity check 2 — constant-time comparison
     rc4.key(&tst2);
     rc4.arc4(&mut chk2);
-    if chk2.len() != tst2.len() || chk2 != tst2 {
+    if !security::constant_time_eq(&chk2, &tst2) {
         let msg = bytes_to_str(&tst2);
         die(&me, &msg);
     }
@@ -315,27 +318,52 @@ fn main() {
     // Debug exec mode
     let debug_exec = payload.flags & FLAG_DEBUGEXEC != 0;
 
-    // Convert decrypted fields to strings
+    // Convert decrypted text to a string
+    let text_bytes = if has_preprocessing {
+        text.clone()
+    } else {
+        let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+        text[..end].to_vec()
+    };
+
+    // Move decrypted text into a ProtectedBuffer (mmap-backed, page-aligned, mlocked)
+    // This is the ONLY copy of the plaintext — original vec is zeroed
+    let protected_text = security::ProtectedBuffer::new(&text_bytes);
+
+    // Zero the heap copies — only the ProtectedBuffer holds the plaintext
+    security::secure_zero(&mut text);
+    let mut text_bytes = text_bytes;
+    security::secure_zero(&mut text_bytes);
+    drop(text_bytes);
+
+    // Protect the buffer (PROT_NONE) — memory dumps will see inaccessible pages
+    if let Some(ref pt) = protected_text {
+        pt.protect();
+    }
+
+    // Convert other decrypted fields to strings and zero originals
     let shll_str = bytes_to_str(&shll);
     let inlo_str = bytes_to_str(&inlo);
     let opts_str = bytes_to_str(&opts);
     let lsto_str = bytes_to_str(&lsto);
-    let text_str = if has_preprocessing {
-        String::from_utf8_lossy(&text).to_string()
-    } else {
-        bytes_to_str(&text)
-    };
 
-    // Zero out sensitive buffers
     security::secure_zero(&mut shll);
     security::secure_zero(&mut inlo);
     security::secure_zero(&mut opts);
     security::secure_zero(&mut lsto);
-    security::secure_zero(&mut text);
     security::secure_zero(&mut msg1);
     security::secure_zero(&mut date);
     security::secure_zero(&mut xecc);
     security::secure_zero(&mut rlax);
+
+    // Unprotect text just before exec — minimize plaintext exposure window
+    if let Some(ref pt) = protected_text {
+        pt.unprotect_read();
+    }
+    let text_str = protected_text
+        .as_ref()
+        .map(|p| String::from_utf8_lossy(p.as_slice()).to_string())
+        .unwrap_or_default();
 
     if payload.ext_flags & FLAG_EXT_STDIN_MODE != 0 {
         exec_stdin_mode(
@@ -492,11 +520,7 @@ fn check_max_runs(me: &str, exe_path: &std::path::Path, max_runs: u32) {
     let current: u32 = contents.trim().parse().unwrap_or(0);
 
     if current >= max_runs {
-        let msg = obfuscated_msg(&security::xor_encode(
-            b"maximum executions reached",
-            XOR_KEY,
-        ));
-        die(me, &msg);
+        die(me, obfstr::obfstr!("maximum executions reached"));
     }
 
     // Write incremented count atomically (under lock)

@@ -149,6 +149,10 @@ pub struct Cli {
     )]
     pub bind_host: bool,
 
+    /// Detect and refuse execution inside virtual machines (native mode only)
+    #[arg(long = "anti-vm", help_heading = "Security", requires = "native")]
+    pub anti_vm: bool,
+
     // -- Shell options --
     /// Inline option passed to the shell interpreter (e.g. -e)
     #[arg(

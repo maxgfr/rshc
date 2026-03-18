@@ -125,6 +125,7 @@ fn main() -> Result<()> {
             max_runs: args.max_runs,
             no_network: args.no_network,
             bind_host: args.bind_host,
+            anti_vm: args.anti_vm,
         };
 
         // Pre-process text: compress then AES-encrypt BEFORE RC4

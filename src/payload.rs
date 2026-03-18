@@ -40,6 +40,7 @@ pub const FLAG_EXT_STDIN_MODE: u8 = 0x08;
 pub const FLAG_EXT_CHACHA: u8 = 0x10;
 pub const FLAG_EXT_NO_NETWORK: u8 = 0x20;
 pub const FLAG_EXT_BIND_HOST: u8 = 0x40;
+pub const FLAG_EXT_ANTI_VM: u8 = 0x80;
 
 #[derive(Default)]
 pub struct Payload {

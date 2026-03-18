@@ -834,6 +834,40 @@ fn test_native_compile_with_bind_host() {
 }
 
 #[test]
+fn test_native_compile_with_anti_vm() {
+    let script = create_script("#!/bin/sh\necho antivm\n");
+    let outdir = tempfile::tempdir().unwrap();
+    let outfile = outdir.path().join("test_anti_vm");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args([
+            "-f",
+            script.path().to_str().unwrap(),
+            "-n",
+            "-r",
+            "--anti-vm",
+            "-o",
+            outfile.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(outfile.exists());
+}
+
+#[test]
+fn test_anti_vm_requires_native() {
+    let script = create_script("#!/bin/sh\necho test\n");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args(["-f", script.path().to_str().unwrap(), "--anti-vm"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn test_bind_host_conflicts_with_password() {
     let script = create_script("#!/bin/sh\necho test\n");
 

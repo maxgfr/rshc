@@ -28,6 +28,16 @@ aes-gcm = "=0.10.3"
 chacha20poly1305 = "=0.10.1"
 zeroize = { version = "=1.8.2", features = ["zeroize_derive"] }
 argon2 = "=0.5.3"
+# Constant-time comparison to prevent timing side-channel attacks
+subtle = "2"
+# Compile-time string encryption (strings never appear in plaintext in the binary)
+obfstr = "0.4"
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1
 
 [dev-dependencies]
 assert_cmd = "2"

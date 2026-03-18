@@ -56,6 +56,8 @@ rshc -f script.sh -n --aes --compress -p  # combine multiple features
 rshc -f script.sh -n --chacha             # ChaCha20-Poly1305 (fast on ARM)
 rshc -f script.sh -n --bind-host          # bind binary to this machine
 rshc -f script.sh -n --no-network         # drop network before exec (Linux)
+rshc -f script.sh -n --anti-vm            # refuse to run inside a VM
+rshc -f script.sh -n -U --aes --compress --anti-vm  # maximum security
 ```
 
 ### Options
@@ -87,6 +89,7 @@ rshc -f script.sh -n --no-network         # drop network before exec (Linux)
 | `--max-runs <N>` | Maximum number of executions (native only) |
 | `--no-network` | Drop network access before execution (Linux, native only) |
 | `--bind-host` | Bind binary to this machine's identity (native only) |
+| `--anti-vm` | Refuse execution inside virtual machines (native only) |
 | `-C` | Display license |
 | `-A` | Display abstract |
 
@@ -114,12 +117,21 @@ rshc -n -f script.sh -o compiled_script
 #### Anti-debug & anti-tamper
 
 - **ptrace detection**: `PTRACE_TRACEME` (Linux), `PT_DENY_ATTACH` (macOS)
+- **SIGTRAP handler test** (via `sigaction`): signal-based debugger detection — installs a SIGTRAP handler and verifies it runs (debuggers intercept SIGTRAP, so the handler never fires)
+- **Frida detection**: scans `/proc/self/maps` for Frida artifacts and thread names (`gum-js-loop`, `gmain`, `gdbus`)
+- **Parent process inspection**: checks if the parent process is a known debugger (gdb, lldb, strace, ltrace, radare2, etc.)
 - **TracerPid monitoring**: `/proc/self/status` check (Linux)
+- **P_TRACED flag**: sysctl-based trace detection (macOS)
+- **RDTSC timing**: CPU cycle counter detects single-stepping (x86_64) — impossible to fake without hardware modification
+- **Timer-based anti-debug**: wall-clock timing detects single-stepping (30s threshold)
 - **Environment injection detection**: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH`, `LSAN_OPTIONS`, `ASAN_OPTIONS`, `UBSAN_OPTIONS`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FRAMEWORK_PATH`
-- **Timer-based anti-debug**: detects single-stepping (30s threshold)
+- **Seccomp-BPF syscall filter** (Linux): blocks `ptrace`, `process_vm_readv`, `process_vm_writev` at kernel level after anti-debug checks — prevents debugger attachment post-verification
 - **Core dump prevention**: `RLIMIT_CORE=0` + `PR_SET_DUMPABLE=0` (verified)
 - **Binary integrity**: SHA-256 self-checksum detects tampering
 - **Runner symlink check**: prevents binary substitution attacks
+- **Constant-time comparisons**: all password/hash/integrity comparisons use `subtle::ConstantTimeEq` to prevent timing side-channel attacks
+- **PR_SET_MDWE** (Linux 6.3+): denies write-execute memory mappings, blocking code injection attacks
+- **VM/hypervisor detection** (`--anti-vm`): CPUID hypervisor bit (x86_64) and DMI/SMBIOS checks (Linux) detect VMware, VirtualBox, KVM, Hyper-V, Xen, Parallels
 
 #### Password protection (`-p`)
 
@@ -140,12 +152,14 @@ Parameters: 19 MB memory, 2 iterations, 1 parallelism — secure against diction
 - **Default mode**: 4096-space prefix hides script in process listings
 - **Stdin mode** (`--stdin-mode`): pipes script via stdin — invisible in `/proc/*/cmdline`
 
-#### Anti-forensics
+#### Anti-forensics & memory protection
 
+- **mmap-backed protected memory**: decrypted script stored in a dedicated mmap region with `PROT_NONE` ↔ `PROT_READ` toggling — memory dumps see inaccessible pages. On Linux 5.14+, uses `memfd_secret` for kernel-invisible memory (not accessible even to root via `/proc/pid/mem`)
 - **mlock**: Sensitive buffers (keys, decrypted text) locked in RAM to prevent swapping to disk
 - **MADV_DONTDUMP**: Sensitive memory excluded from core dumps (Linux)
-- **zeroize**: All sensitive data zeroed after use (keys, decrypted script, passwords)
-- XOR-obfuscated error messages (not visible via `strings`)
+- **zeroize**: All sensitive data zeroed after use (keys, decrypted script, passwords) using volatile writes that cannot be optimized away
+- **Minimal plaintext window**: script is decrypted into a ProtectedBuffer, protected (PROT_NONE), and only unprotected at the instant of execution
+- **Compile-time string encryption** (`obfstr`): all error messages encrypted at compile time with per-string random keys — zero plaintext strings in the binary (verified with `strings`)
 
 #### Network & host isolation
 
@@ -194,12 +208,14 @@ For musl targets, `-static` is automatically added to CFLAGS. Override with `CC`
 
 See [SECURITY.md](SECURITY.md) for the full threat model, including what rshc protects against and what it does not.
 
+Release binaries are compiled with `panic = "abort"` (no unwind info), `strip = true` (no symbols), `lto = true` (link-time optimization), and `codegen-units = 1` (single compilation unit) — minimizing information available to reverse engineers.
+
 **Summary**: rshc is an obfuscation tool, not DRM. It prevents casual source code extraction and raises the bar for reverse engineering, but a determined attacker with binary access can still recover the script via memory dumps or kernel-level tracing.
 
 ## Testing
 
 ```bash
-# Unit tests (87 tests)
+# Unit tests (100+ tests)
 cargo test
 
 # Integration tests (26 tests covering native mode features)
@@ -222,7 +238,7 @@ Test coverage includes:
 - RC4 encryption/decryption roundtrips
 - AES-256-GCM encryption/decryption, key derivation, tamper detection (10 tests)
 - Payload serialization V1/V2 formats, bounds checking, trailer pattern (13 tests)
-- Security: Argon2id password hashing, SHA-256, XOR obfuscation, memory zeroing, symlink detection, anti-debug timer (19 tests)
+- Security: Argon2id password hashing, SHA-256, XOR obfuscation, memory zeroing, symlink detection, anti-debug timer, constant-time eq, SIGTRAP, Frida, RDTSC, ProtectedBuffer, VM detection (27 tests)
 - CLI flag parsing, conflicts, and date validation
 - Full end-to-end pipeline: compilation + execution for native mode with all feature combinations
 
@@ -248,15 +264,19 @@ Test coverage includes:
 7. Appends the payload, sets final permissions (0o775)
 
 At runtime:
-1. Starts anti-debug timer
-2. Verifies binary integrity (SHA-256)
-3. Checks for debugger attachment (ptrace, env injection, TracerPid)
-4. Disables core dumps (verified)
-5. Prompts for password if required (Argon2id verification)
-6. Checks execution count with file locking
-7. Decrypts (RC4 → AES-GCM → decompress)
-8. Zeros all sensitive data
-9. Executes via `execvp` or stdin pipe
+1. Starts anti-debug timers (wall-clock + RDTSC cycle counter)
+2. Disables core dumps (verified), sets `PR_SET_NO_NEW_PRIVS`
+3. Multi-layer debugger detection: ptrace, SIGTRAP, Frida, parent process, env injection, TracerPid, RDTSC timing
+4. Installs seccomp-BPF filter (blocks ptrace/process_vm_readv/writev)
+5. VM detection if `--anti-vm` enabled (CPUID / DMI)
+6. Verifies binary integrity (SHA-256)
+7. Prompts for password if required (Argon2id, constant-time comparison)
+8. Checks host binding (constant-time comparison)
+9. Checks execution count with file locking
+10. Decrypts (RC4 → AES-GCM → decompress) into mmap-backed ProtectedBuffer
+11. Protects decrypted text (PROT_NONE), zeros all intermediate buffers
+12. Unprotects text at the instant of execution
+13. Executes via `execvp` or stdin pipe
 
 ## Acknowledgments
 
