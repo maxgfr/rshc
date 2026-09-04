@@ -50,18 +50,18 @@ pub fn detect_debugger() -> bool {
 }
 
 /// Try to detect if the process is being ptraced.
+///
+/// On Linux we deliberately do NOT use `PTRACE_TRACEME`: it makes the parent the
+/// tracer, and a tracee cannot cleanly detach itself (`PTRACE_DETACH` must come
+/// from the tracer), so the call would leave the process traced. That both
+/// poisons the later `detect_tracer_linux` check — `/proc/self/status` would
+/// report a non-zero `TracerPid`, a false positive — and would leave the process
+/// stopped on the final `execvp`. `detect_tracer_linux` (the `TracerPid` read) is
+/// the correct, side-effect-free ptrace detector on Linux and catches the same
+/// gdb/strace/etc. attachment. macOS has no `/proc`, so it uses `PT_DENY_ATTACH`,
+/// which only denies future attaches (and returns -1 if already traced) without
+/// making the process a tracee.
 fn detect_ptrace() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        unsafe {
-            let result = libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0);
-            if result == -1 {
-                return true;
-            }
-            libc::ptrace(libc::PTRACE_DETACH, 0, 0, 0);
-        }
-    }
-
     #[cfg(target_os = "macos")]
     {
         const PT_DENY_ATTACH: libc::c_int = 31;
