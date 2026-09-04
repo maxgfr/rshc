@@ -82,7 +82,7 @@ tests/
 4. **Parent process inspection**: checks /proc/<ppid>/comm for known debuggers (gdb, lldb, strace, ltrace, radare2...)
 5. **P_TRACED flag (macOS)**: sysctl-based trace detection using raw kinfo_proc
 6. **TracerPid monitoring**: /proc/self/status check (Linux)
-7. **Environment injection detection**: LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH, GCONV_PATH, sanitizer options, DYLD_* vars
+7. **Environment injection detection**: LD_PRELOAD, LD_AUDIT, GCONV_PATH, sanitizer options (LSAN/ASAN/UBSAN_OPTIONS), DYLD_INSERT_LIBRARIES — the vars that load/hook code. Library search-path vars (LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, DYLD_FRAMEWORK_PATH) are intentionally NOT flagged: they're set legitimately by CI/dev/packaging and would cause false positives.
 8. **RDTSC timing** (x86_64): CPU cycle counter detects single-stepping — impossible to fake without hardware modification
 9. **Timer-based anti-debug**: wall-clock timing detects single-stepping (30s threshold)
 10. **Seccomp-BPF** (Linux): after anti-debug checks pass, installs kernel-level filter blocking ptrace, process_vm_readv, process_vm_writev — prevents debugger attachment post-verification

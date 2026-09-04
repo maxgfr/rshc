@@ -82,7 +82,7 @@ fn main() {
 
         // Multi-layer debugger detection:
         // 1. ptrace (PTRACE_TRACEME / PT_DENY_ATTACH)
-        // 2. Environment injection (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.)
+        // 2. Environment injection (LD_PRELOAD, LD_AUDIT, DYLD_INSERT_LIBRARIES, etc.)
         // 3. TracerPid in /proc/self/status (Linux)
         // 4. SIGTRAP handler test (signal-based, catches GDB/LLDB)
         // 5. Frida detection (/proc/self/maps + thread names)

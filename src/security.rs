@@ -77,11 +77,16 @@ fn detect_ptrace() -> bool {
 }
 
 /// Detect environment variable injection attacks.
-/// Checks for LD_PRELOAD, LD_AUDIT, DYLD_INSERT_LIBRARIES, and other dangerous vars.
+/// Checks for LD_PRELOAD, LD_AUDIT, GCONV_PATH, DYLD_INSERT_LIBRARIES and the
+/// sanitizer option vars — the variables that actually load or hook code into
+/// the process. Library *search-path* vars (LD_LIBRARY_PATH, DYLD_LIBRARY_PATH,
+/// DYLD_FRAMEWORK_PATH) are deliberately excluded: they merely extend the search
+/// path, are set routinely and legitimately (CI runners, dev shells, packaged
+/// apps), and flagging them makes the binary refuse to run in ordinary
+/// environments — a false positive, not an injection.
 fn detect_env_injection() -> bool {
     const DANGEROUS_VARS: &[&str] = &[
         "LD_PRELOAD",
-        "LD_LIBRARY_PATH",
         "LD_AUDIT",
         "GCONV_PATH",
         "LSAN_OPTIONS",
@@ -89,10 +94,6 @@ fn detect_env_injection() -> bool {
         "UBSAN_OPTIONS",
         #[cfg(target_os = "macos")]
         "DYLD_INSERT_LIBRARIES",
-        #[cfg(target_os = "macos")]
-        "DYLD_LIBRARY_PATH",
-        #[cfg(target_os = "macos")]
-        "DYLD_FRAMEWORK_PATH",
     ];
     for var in DANGEROUS_VARS {
         if std::env::var_os(var).is_some() {
