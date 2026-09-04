@@ -3,12 +3,68 @@ use predicates::prelude::*;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-/// Helper to create a temporary shell script.
+/// Helper to create a temporary shell script from UTF-8 text.
 fn create_script(content: &str) -> NamedTempFile {
+    create_script_bytes(content.as_bytes())
+}
+
+/// Helper to create a temporary shell script from raw bytes (may be non-UTF-8).
+fn create_script_bytes(content: &[u8]) -> NamedTempFile {
     let mut f = NamedTempFile::new().unwrap();
-    f.write_all(content.as_bytes()).unwrap();
+    f.write_all(content).unwrap();
     f.flush().unwrap();
     f
+}
+
+/// Run a compiled binary and return its output, failing loudly if it cannot be
+/// spawned. Never silently swallows a spawn error.
+fn run_bin(path: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(path)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("could not execute {}: {}", path.display(), e))
+}
+
+/// Run a compiled binary, feeding `stdin_data` to its stdin. Used for password
+/// prompts (read_password reads stdin, so no PTY is required).
+fn run_bin_stdin(path: &std::path::Path, stdin_data: &[u8]) -> std::process::Output {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("could not spawn {}: {}", path.display(), e));
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin_data)
+        .unwrap_or_else(|e| panic!("could not write stdin to {}: {}", path.display(), e));
+    child
+        .wait_with_output()
+        .unwrap_or_else(|e| panic!("could not wait for {}: {}", path.display(), e))
+}
+
+/// Assert a binary ran successfully and printed `needle`.
+fn assert_runs_with(path: &std::path::Path, args: &[&str], needle: &str) {
+    let out = run_bin(path, args);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "binary {} exited with failure (stderr: {})",
+        path.display(),
+        stderr
+    );
+    assert!(
+        stdout.contains(needle),
+        "expected '{}' in output of {}, got: {} (stderr: {})",
+        needle,
+        path.display(),
+        stdout,
+        stderr
+    );
 }
 
 // ============================================================
@@ -81,21 +137,7 @@ fn test_native_compile_basic() {
         .success();
 
     assert!(outfile.exists());
-
-    // Execute the compiled binary
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("hello"),
-                "expected 'hello' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "hello");
 }
 
 #[test]
@@ -119,20 +161,14 @@ fn test_native_compile_with_args() {
 
     assert!(outfile.exists());
 
-    std::process::Command::new(outfile.to_str().unwrap())
-        .args(["first", "second"])
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("first") && stdout.contains("second"),
-                "expected args in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    let out = run_bin(&outfile, &["first", "second"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "binary exited with failure");
+    assert!(
+        stdout.contains("first") && stdout.contains("second"),
+        "expected args in output, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -155,6 +191,33 @@ fn test_native_compile_with_relax() {
         .success();
 
     assert!(outfile.exists());
+    assert_runs_with(&outfile, &[], "relax");
+}
+
+#[test]
+fn test_native_compile_untraceable() {
+    // The headline anti-debug path (-U): FLAG_TRACEABLE == 0 so all the
+    // ptrace/seccomp/timing checks run. Prove the binary still runs correctly.
+    let script = create_script("#!/bin/sh\necho untraceable\n");
+    let outdir = tempfile::tempdir().unwrap();
+    let outfile = outdir.path().join("test_untraceable");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args([
+            "-f",
+            script.path().to_str().unwrap(),
+            "-n",
+            "-U",
+            "-r",
+            "-o",
+            outfile.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(outfile.exists());
+    assert_runs_with(&outfile, &[], "untraceable");
 }
 
 #[test]
@@ -178,21 +241,7 @@ fn test_native_compile_with_compress() {
         .success();
 
     assert!(outfile.exists());
-
-    // Execute and verify it works
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("compressed"),
-                "expected 'compressed' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "compressed");
 }
 
 #[test]
@@ -216,20 +265,7 @@ fn test_native_compile_with_aes() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("aes_mode"),
-                "expected 'aes_mode' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "aes_mode");
 }
 
 #[test]
@@ -254,20 +290,7 @@ fn test_native_compile_with_aes_and_compress() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("aes_compress"),
-                "expected 'aes_compress' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "aes_compress");
 }
 
 #[test]
@@ -291,20 +314,7 @@ fn test_native_compile_stdin_mode() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("stdin_mode"),
-                "expected 'stdin_mode' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "stdin_mode");
 }
 
 #[test]
@@ -332,20 +342,12 @@ fn test_native_compile_max_runs() {
 
     // First two runs should succeed
     for _ in 0..2 {
-        let output = std::process::Command::new(outfile.to_str().unwrap()).output();
-        if let Ok(o) = output {
-            assert!(
-                String::from_utf8_lossy(&o.stdout).contains("run"),
-                "expected 'run' in output"
-            );
-        }
+        assert_runs_with(&outfile, &[], "run");
     }
 
     // Third run should fail (max runs exceeded)
-    let output = std::process::Command::new(outfile.to_str().unwrap()).output();
-    if let Ok(o) = output {
-        assert!(!o.status.success(), "expected failure after max runs");
-    }
+    let out = run_bin(&outfile, &[]);
+    assert!(!out.status.success(), "expected failure after max runs");
 
     // Clean up counter file
     let counter_file = format!("{}.runs", outfile.display());
@@ -377,6 +379,46 @@ fn test_native_compile_verbose() {
 }
 
 // ============================================================
+// Byte-faithful native execution
+// ============================================================
+
+#[test]
+#[cfg(unix)]
+fn test_native_byte_faithful() {
+    // A script body carrying non-UTF-8 bytes must round-trip byte-identically:
+    // the old lossy String conversion would corrupt them into U+FFFD.
+    // printf outputs the literal bytes M, 0xC3, '(', E.
+    let script_bytes: &[u8] = b"#!/bin/sh\nprintf 'M\xc3\x28E'\n";
+    let script = create_script_bytes(script_bytes);
+    let outdir = tempfile::tempdir().unwrap();
+    let outfile = outdir.path().join("test_byte_faithful");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args([
+            "-f",
+            script.path().to_str().unwrap(),
+            "-n",
+            "-r",
+            "--aes",
+            "-o",
+            outfile.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(outfile.exists());
+
+    let out = run_bin(&outfile, &[]);
+    assert!(out.status.success(), "binary exited with failure");
+    assert_eq!(
+        out.stdout, b"M\xc3\x28E",
+        "non-UTF-8 script bytes were not preserved: got {:?}",
+        out.stdout
+    );
+}
+
+// ============================================================
 // Classic mode compilation tests
 // ============================================================
 
@@ -403,21 +445,9 @@ fn test_classic_compile_basic() {
     if std::path::Path::new(&c_file).exists() {
         // Cleanup generated C file
         let _ = std::fs::remove_file(&c_file);
-        // If cc was available, the binary should exist
+        // If cc was available, the binary should exist and run
         if outfile.exists() {
-            std::process::Command::new(outfile.to_str().unwrap())
-                .output()
-                .map(|output| {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    assert!(
-                        stdout.contains("classic"),
-                        "expected 'classic' in output, got: {}",
-                        stdout
-                    );
-                })
-                .unwrap_or_else(|e| {
-                    eprintln!("Warning: could not execute compiled binary: {}", e);
-                });
+            assert_runs_with(&outfile, &[], "classic");
         }
     } else {
         // If no C file was generated, there was an error earlier
@@ -540,16 +570,14 @@ fn test_native_compile_with_expiry_past() {
     assert!(outfile.exists());
 
     // Should fail because it's expired
-    let output = std::process::Command::new(outfile.to_str().unwrap()).output();
-    if let Ok(o) = output {
-        assert!(!o.status.success(), "expected failure due to expiration");
-        let stderr = String::from_utf8_lossy(&o.stderr);
-        assert!(
-            stderr.contains("expired"),
-            "expected 'expired' message, got: {}",
-            stderr
-        );
-    }
+    let out = run_bin(&outfile, &[]);
+    assert!(!out.status.success(), "expected failure due to expiration");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("expired"),
+        "expected 'expired' message, got: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -574,20 +602,7 @@ fn test_native_compile_with_expiry_future() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("not_expired"),
-                "expected 'not_expired' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "not_expired");
 }
 
 // ============================================================
@@ -642,20 +657,7 @@ fn test_native_all_features_combined() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("all_features"),
-                "expected 'all_features' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "all_features");
 
     // Clean up
     let counter_file = format!("{}.runs", outfile.display());
@@ -687,20 +689,7 @@ fn test_native_compile_with_chacha() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("chacha_mode"),
-                "expected 'chacha_mode' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "chacha_mode");
 }
 
 #[test]
@@ -753,20 +742,7 @@ fn test_native_compile_chacha_with_compress() {
         .success();
 
     assert!(outfile.exists());
-
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("chacha_compress"),
-                "expected 'chacha_compress' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "chacha_compress");
 }
 
 // ============================================================
@@ -818,19 +794,7 @@ fn test_native_compile_with_bind_host() {
     assert!(outfile.exists());
 
     // Binary should work on the same host it was built on
-    std::process::Command::new(outfile.to_str().unwrap())
-        .output()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("bound"),
-                "expected 'bound' in output, got: {}",
-                stdout
-            );
-        })
-        .unwrap_or_else(|e| {
-            eprintln!("Warning: could not execute compiled binary: {}", e);
-        });
+    assert_runs_with(&outfile, &[], "bound");
 }
 
 #[test]
@@ -854,6 +818,26 @@ fn test_native_compile_with_anti_vm() {
         .success();
 
     assert!(outfile.exists());
+
+    // On a bare-metal host the VM check passes and the script runs. In a VM
+    // (some CI) it exits refusing to run; accept that but require the refusal
+    // message rather than a silent failure.
+    let out = run_bin(&outfile, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("antivm"),
+            "expected 'antivm' in output, got: {}",
+            stdout
+        );
+    } else {
+        assert!(
+            stderr.contains("unsupported environment"),
+            "anti-vm binary failed unexpectedly (stderr: {})",
+            stderr
+        );
+    }
 }
 
 #[test]
@@ -865,6 +849,50 @@ fn test_anti_vm_requires_native() {
         .args(["-f", script.path().to_str().unwrap(), "--anti-vm"])
         .assert()
         .failure();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_native_compile_no_network() {
+    let script = create_script("#!/bin/sh\necho no_net\n");
+    let outdir = tempfile::tempdir().unwrap();
+    let outfile = outdir.path().join("test_no_net");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args([
+            "-f",
+            script.path().to_str().unwrap(),
+            "-n",
+            "-r",
+            "--no-network",
+            "-o",
+            outfile.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(outfile.exists());
+
+    // unshare(CLONE_NEWNET) needs privileges. On a host that grants them the
+    // script runs; in an unprivileged sandbox the runner refuses fast. Both
+    // exercise the path — but fail loudly on any other kind of failure.
+    let out = run_bin(&outfile, &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        assert!(
+            stdout.contains("no_net"),
+            "expected 'no_net' in output, got: {}",
+            stdout
+        );
+    } else {
+        assert!(
+            stderr.contains("network"),
+            "no-network binary failed unexpectedly (stderr: {})",
+            stderr
+        );
+    }
 }
 
 #[test]
@@ -883,4 +911,60 @@ fn test_bind_host_conflicts_with_password() {
         ])
         .assert()
         .failure();
+}
+
+// ============================================================
+// Password protection round-trip
+// ============================================================
+
+#[test]
+#[cfg(unix)]
+fn test_native_password_roundtrip() {
+    // Build with a password: read_password reads stdin, so the passphrase can be
+    // piped (entry + confirmation) — no PTY needed.
+    let script = create_script("#!/bin/sh\necho password_ok\n");
+    let outdir = tempfile::tempdir().unwrap();
+    let outfile = outdir.path().join("test_password");
+
+    Command::cargo_bin("rshc")
+        .unwrap()
+        .args([
+            "-f",
+            script.path().to_str().unwrap(),
+            "-n",
+            "-r",
+            "-p",
+            "-o",
+            outfile.to_str().unwrap(),
+        ])
+        .write_stdin("s3cr3t-pass\ns3cr3t-pass\n")
+        .assert()
+        .success();
+
+    assert!(outfile.exists());
+
+    // Correct password → runs and prints the marker.
+    let ok = run_bin_stdin(&outfile, b"s3cr3t-pass\n");
+    let stdout = String::from_utf8_lossy(&ok.stdout);
+    assert!(
+        ok.status.success(),
+        "correct password should run (stderr: {})",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        stdout.contains("password_ok"),
+        "expected 'password_ok' in output, got: {}",
+        stdout
+    );
+
+    // Wrong password → refuses with a non-zero exit and does not run the script.
+    let bad = run_bin_stdin(&outfile, b"wrong-pass\n");
+    assert!(
+        !bad.status.success(),
+        "wrong password must not run the script"
+    );
+    assert!(
+        !String::from_utf8_lossy(&bad.stdout).contains("password_ok"),
+        "wrong password must not print the script output"
+    );
 }

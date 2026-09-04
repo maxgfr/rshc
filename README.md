@@ -81,7 +81,7 @@ rshc -f script.sh -n -U --aes --compress --anti-vm  # maximum security
 | `-H` | Hardening mode (classic only) |
 | `-B` | Compile for BusyBox (classic only) |
 | `-2` | Use mmap2 syscall (classic only) |
-| `-p` / `--password` | Require password at runtime — Argon2id (native only) |
+| `-p` / `--password` | Require password at runtime — the encryption key is derived from it via Argon2id, auto-enabling AES-256-GCM (native only) |
 | `--aes` | Use AES-256-GCM encryption (native only) |
 | `--chacha` | Use ChaCha20-Poly1305 encryption (native only, fast on ARM) |
 | `--compress` | Compress script before encryption (native only) |
@@ -135,7 +135,10 @@ rshc -n -f script.sh -o compiled_script
 
 #### Password protection (`-p`)
 
-Passwords are hashed with **Argon2id** (memory-hard, GPU/ASIC-resistant):
+The password is a real cryptographic gate: the AEAD key is **derived** from it
+with **Argon2id** (memory-hard, GPU/ASIC-resistant) and never stored in the
+binary, so the payload cannot be decrypted without the password. `-p` alone
+auto-enables AES-256-GCM keyed by that derived key:
 
 ```bash
 rshc -n -f script.sh -p -r
@@ -270,7 +273,7 @@ At runtime:
 4. Installs seccomp-BPF filter (blocks ptrace/process_vm_readv/writev)
 5. VM detection if `--anti-vm` enabled (CPUID / DMI)
 6. Verifies binary integrity (SHA-256)
-7. Prompts for password if required (Argon2id, constant-time comparison)
+7. Prompts for password if required (derives the AEAD key via Argon2id; a domain-separated constant-time pre-check, with the AEAD auth tag as the true gate)
 8. Checks host binding (constant-time comparison)
 9. Checks execution count with file locking
 10. Decrypts (RC4 → AES-GCM → decompress) into mmap-backed ProtectedBuffer

@@ -23,7 +23,7 @@ use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroize;
 
@@ -51,7 +51,7 @@ fn main() {
         .cloned()
         .or_else(|| env::var("_").ok())
         .unwrap_or_else(|| {
-            eprintln!("E: neither argv[0] nor $_ works.");
+            eprintln!("{}", obfstr::obfstr!("E: neither argv[0] nor $_ works."));
             process::exit(1);
         });
 
@@ -124,15 +124,25 @@ fn main() {
         }
     }
 
-    // Password protection (Argon2id) — constant-time comparison
-    if payload.ext_flags & FLAG_EXT_PASSWORD != 0 {
-        let password = security::read_password("Password: ").unwrap_or_else(|e| {
+    // Password protection: derive the AEAD key from the password (Argon2id).
+    // The domain-separated constant-time pre-check gives a clean "wrong
+    // password" error, but the AEAD auth tag is the true gate — a wrong
+    // password derives the wrong key, so decryption fails below regardless.
+    let has_password = payload.ext_flags & FLAG_EXT_PASSWORD != 0;
+    let mut password_aead_key = [0u8; 32];
+    if has_password {
+        let mut password = security::read_password("Password: ").unwrap_or_else(|e| {
             die(&me, &format!("cannot read password: {}", e));
         });
-        let hash = security::hash_password(password.as_bytes(), &payload.password_salt);
-        if !security::constant_time_eq(&hash, &payload.password_hash) {
+        let mut derived = security::derive_key_argon2(password.as_bytes(), &payload.password_salt);
+        password.zeroize();
+        let verify = security::password_verify_hash(&derived);
+        if !security::constant_time_eq(&verify, &payload.password_hash) {
             die(&me, obfstr::obfstr!("wrong password"));
         }
+        password_aead_key.copy_from_slice(&derived);
+        derived.zeroize();
+        security::mlock_buffer(&password_aead_key);
     }
 
     // Host binding check — constant-time comparison
@@ -184,12 +194,21 @@ fn main() {
     security::mlock_buffer(&text);
     security::mark_dontdump(&text);
 
-    // Extract AEAD key if AES or ChaCha mode is enabled (first 32 bytes of pswd)
+    // AEAD key resolution:
+    // - password mode: the key was derived from the password above; pswd is the
+    //   full RC4 key (nothing was prepended at build time).
+    // - aes/chacha WITHOUT password: the random key is the first 32 bytes of pswd.
     let has_aead = payload.ext_flags & (FLAG_EXT_AES | FLAG_EXT_CHACHA) != 0;
     let mut aes_key = [0u8; 32];
-    let rc4_pswd = if has_aead {
+    let rc4_pswd = if has_password {
+        aes_key.copy_from_slice(&password_aead_key);
+        security::mlock_buffer(&aes_key);
+        security::munlock_buffer(&password_aead_key);
+        password_aead_key.zeroize();
+        pswd
+    } else if has_aead {
         if pswd.len() < 32 {
-            die(&me, "invalid AEAD payload");
+            die(&me, obfstr::obfstr!("invalid AEAD payload"));
         }
         aes_key.copy_from_slice(&pswd[..32]);
         security::mlock_buffer(&aes_key);
@@ -212,7 +231,7 @@ fn main() {
         if let Ok(expiry) = date_str.parse::<i64>() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(Duration::ZERO)
                 .as_secs() as i64;
             if expiry < now {
                 let msg = bytes_to_str(&msg1);
@@ -262,7 +281,7 @@ fn main() {
 
     // Timer-based anti-debug check: if decryption took too long, likely being debugged
     if payload.flags & FLAG_TRACEABLE == 0 && security::anti_debug_timer_check(timer, 30_000) {
-        die(&me, "timeout");
+        die(&me, obfstr::obfstr!("timeout"));
     }
 
     // Zero out integrity check buffers
@@ -284,14 +303,20 @@ fn main() {
     if payload.ext_flags & FLAG_EXT_AES != 0 {
         let decrypted =
             rshc::aes::aes_decrypt(&text, &aes_key, &payload.aes_nonce).unwrap_or_else(|e| {
-                die(&me, &format!("AES decryption failed: {}", e));
+                die(
+                    &me,
+                    &format!("{}: {}", obfstr::obfstr!("AES decryption failed"), e),
+                );
             });
         security::secure_zero(&mut text);
         text = decrypted;
     } else if payload.ext_flags & FLAG_EXT_CHACHA != 0 {
         let decrypted = rshc::chacha::chacha_decrypt(&text, &aes_key, &payload.aes_nonce)
             .unwrap_or_else(|e| {
-                die(&me, &format!("ChaCha20 decryption failed: {}", e));
+                die(
+                    &me,
+                    &format!("{}: {}", obfstr::obfstr!("ChaCha20 decryption failed"), e),
+                );
             });
         security::secure_zero(&mut text);
         text = decrypted;
@@ -305,7 +330,10 @@ fn main() {
         let mut decoder = DeflateDecoder::new(&text[..]);
         let mut decompressed = Vec::new();
         decoder.read_to_end(&mut decompressed).unwrap_or_else(|e| {
-            die(&me, &format!("decompression failed: {}", e));
+            die(
+                &me,
+                &format!("{}: {}", obfstr::obfstr!("decompression failed"), e),
+            );
         });
         security::secure_zero(&mut text);
         text = decompressed;
@@ -360,18 +388,34 @@ fn main() {
     if let Some(ref pt) = protected_text {
         pt.unprotect_read();
     }
-    let text_str = protected_text
+    // Keep the decrypted script as raw bytes — a lossy UTF-8 conversion would
+    // corrupt scripts containing non-UTF-8 bytes. shll/opts/etc. stay strings.
+    let empty: &[u8] = &[];
+    let script_bytes: &[u8] = protected_text
         .as_ref()
-        .map(|p| String::from_utf8_lossy(p.as_slice()).to_string())
-        .unwrap_or_default();
+        .map(|p| p.as_slice())
+        .unwrap_or(empty);
 
     if payload.ext_flags & FLAG_EXT_STDIN_MODE != 0 {
         exec_stdin_mode(
-            &me, &args, &shll_str, &opts_str, &lsto_str, &text_str, debug_exec,
+            &me,
+            &args,
+            &shll_str,
+            &opts_str,
+            &lsto_str,
+            script_bytes,
+            debug_exec,
         );
     } else {
         exec_arg_mode(
-            &me, &args, &shll_str, &inlo_str, &opts_str, &lsto_str, &text_str, debug_exec,
+            &me,
+            &args,
+            &shll_str,
+            &inlo_str,
+            &opts_str,
+            &lsto_str,
+            script_bytes,
+            debug_exec,
         );
     }
 }
@@ -385,13 +429,13 @@ fn exec_arg_mode(
     inlo_str: &str,
     opts_str: &str,
     lsto_str: &str,
-    text_str: &str,
+    text_bytes: &[u8],
     debug_exec: bool,
 ) -> ! {
-    // Prepend hide_z (4096) spaces to hide script in process listing
+    // Prepend hide_z (4096) spaces to hide script in process listing.
+    // Build the argument from raw bytes so non-UTF-8 script bytes reach execvp
+    // unchanged (a String conversion would be lossy).
     let hide_z = 1usize << 12;
-    let mut scrpt = " ".repeat(hide_z);
-    scrpt.push_str(text_str);
 
     let mut cmd = std::process::Command::new(shll_str);
 
@@ -408,7 +452,21 @@ fn exec_arg_mode(
     if !inlo_str.is_empty() {
         cmd.arg(inlo_str);
     }
-    cmd.arg(&scrpt);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut scrpt = vec![b' '; hide_z];
+        scrpt.extend_from_slice(text_bytes);
+        cmd.arg(std::ffi::OsStr::from_bytes(&scrpt));
+    }
+    #[cfg(windows)]
+    {
+        let mut scrpt = " ".repeat(hide_z);
+        scrpt.push_str(&String::from_utf8_lossy(text_bytes));
+        cmd.arg(&scrpt);
+    }
+
     if !lsto_str.is_empty() {
         cmd.arg(lsto_str);
     }
@@ -417,8 +475,17 @@ fn exec_arg_mode(
     }
 
     if debug_exec {
-        eprintln!("[rshc-runner] exec: {} {}", shll_str, inlo_str);
-        eprintln!("[rshc-runner] script length: {}", text_str.len());
+        eprintln!(
+            "{} {} {}",
+            obfstr::obfstr!("[rshc-runner] exec:"),
+            shll_str,
+            inlo_str
+        );
+        eprintln!(
+            "{} {}",
+            obfstr::obfstr!("[rshc-runner] script length:"),
+            text_bytes.len()
+        );
     }
 
     // Unix: replace process with exec (never returns on success)
@@ -448,7 +515,7 @@ fn exec_stdin_mode(
     shll_str: &str,
     opts_str: &str,
     lsto_str: &str,
-    text_str: &str,
+    text_bytes: &[u8],
     debug_exec: bool,
 ) -> ! {
     use std::io::Write;
@@ -471,8 +538,16 @@ fn exec_stdin_mode(
     cmd.stdin(Stdio::piped());
 
     if debug_exec {
-        eprintln!("[rshc-runner] exec (stdin mode): {}", shll_str);
-        eprintln!("[rshc-runner] script length: {}", text_str.len());
+        eprintln!(
+            "{} {}",
+            obfstr::obfstr!("[rshc-runner] exec (stdin mode):"),
+            shll_str
+        );
+        eprintln!(
+            "{} {}",
+            obfstr::obfstr!("[rshc-runner] script length:"),
+            text_bytes.len()
+        );
     }
 
     let mut child = cmd.spawn().unwrap_or_else(|e| {
@@ -480,7 +555,7 @@ fn exec_stdin_mode(
     });
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text_str.as_bytes()).unwrap_or_else(|e| {
+        stdin.write_all(text_bytes).unwrap_or_else(|e| {
             die(me, &format!("cannot write to shell stdin: {}", e));
         });
     }
@@ -507,7 +582,12 @@ fn check_max_runs(me: &str, exe_path: &std::path::Path, max_runs: u32) {
         .unwrap_or_else(|e| {
             die(
                 me,
-                &format!("cannot open counter file {}: {}", counter_path, e),
+                &format!(
+                    "{} {}: {}",
+                    obfstr::obfstr!("cannot open counter file"),
+                    counter_path,
+                    e
+                ),
             );
         });
 
@@ -525,13 +605,22 @@ fn check_max_runs(me: &str, exe_path: &std::path::Path, max_runs: u32) {
 
     // Write incremented count atomically (under lock)
     file.seek(SeekFrom::Start(0)).unwrap_or_else(|e| {
-        die(me, &format!("counter seek failed: {}", e));
+        die(
+            me,
+            &format!("{}: {}", obfstr::obfstr!("counter seek failed"), e),
+        );
     });
     file.set_len(0).unwrap_or_else(|e| {
-        die(me, &format!("counter truncate failed: {}", e));
+        die(
+            me,
+            &format!("{}: {}", obfstr::obfstr!("counter truncate failed"), e),
+        );
     });
     write!(file, "{}", current + 1).unwrap_or_else(|e| {
-        die(me, &format!("counter write failed: {}", e));
+        die(
+            me,
+            &format!("{}: {}", obfstr::obfstr!("counter write failed"), e),
+        );
     });
     // Lock released on drop
 }

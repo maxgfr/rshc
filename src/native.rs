@@ -48,12 +48,52 @@ fn find_runner() -> Result<std::path::PathBuf> {
     Ok(resolved)
 }
 
+/// Password-derived cryptographic material.
+///
+/// When a password is set, the AEAD key is derived from the password via
+/// Argon2id — it is NOT stored anywhere in the binary. `verify_hash` is a
+/// domain-separated, one-way hash of that key used only for a fast early
+/// "wrong password" check; it cannot reconstruct the key.
+pub struct PasswordMaterial {
+    pub salt: [u8; 32],
+    pub key: [u8; 32],
+    pub verify_hash: [u8; 32],
+}
+
+/// Prompt for a password (with confirmation), then derive the AEAD key and the
+/// domain-separated verification hash. The derived key becomes the AEAD key, so
+/// a wrong password yields a wrong key and AEAD decryption fails at the auth tag.
+pub fn derive_password_material() -> Result<PasswordMaterial> {
+    let pass = security::read_password("Enter password: ")?;
+    let pass_confirm = security::read_password("Confirm password: ")?;
+    if pass != pass_confirm {
+        bail!("rshc: passwords do not match");
+    }
+    if pass.is_empty() {
+        bail!("rshc: password cannot be empty");
+    }
+    let mut salt = [0u8; 32];
+    rand::Rng::fill(&mut rand::rngs::OsRng, &mut salt);
+    let key = security::derive_key_argon2(pass.as_bytes(), &salt);
+    let verify_hash = security::password_verify_hash(&key);
+    Ok(PasswordMaterial {
+        salt,
+        key,
+        verify_hash,
+    })
+}
+
 /// Pre-process script text before encryption: compress, then AES-encrypt.
 /// Returns (processed_text, aes_key, aes_nonce).
 /// These transformations happen BEFORE RC4 encryption so the RC4 stream is consistent.
+///
+/// When `aead_key_override` is `Some`, it is used as the AEAD key (password
+/// mode: the key is derived from the password, never randomised or stored).
+/// Otherwise a random key is generated (convenience mode: aes/chacha alone).
 pub fn preprocess_text(
     text: &[u8],
     native_opts: &NativeOptions,
+    aead_key_override: Option<&[u8; 32]>,
     verbose: bool,
 ) -> Result<(Vec<u8>, [u8; 32], [u8; 12])> {
     let mut processed = text.to_vec();
@@ -80,15 +120,22 @@ pub fn preprocess_text(
         }
     }
 
-    // Step 2: AEAD encrypt (on top of compressed data, before RC4)
+    // Step 2: AEAD encrypt (on top of compressed data, before RC4).
+    // In password mode the key is derived (aead_key_override); otherwise random.
     if native_opts.aes {
-        rand::Rng::fill(&mut rand::rngs::OsRng, &mut aes_key);
+        match aead_key_override {
+            Some(k) => aes_key = *k,
+            None => rand::Rng::fill(&mut rand::rngs::OsRng, &mut aes_key),
+        }
         let (ciphertext, nonce) =
             rshc::aes::aes_encrypt(&processed, &aes_key).map_err(|e| anyhow::anyhow!("{}", e))?;
         processed = ciphertext;
         aes_nonce = nonce;
     } else if native_opts.chacha {
-        rand::Rng::fill(&mut rand::rngs::OsRng, &mut aes_key);
+        match aead_key_override {
+            Some(k) => aes_key = *k,
+            None => rand::Rng::fill(&mut rand::rngs::OsRng, &mut aes_key),
+        }
         let (ciphertext, nonce) = rshc::chacha::chacha_encrypt(&processed, &aes_key)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         processed = ciphertext;
@@ -106,6 +153,7 @@ pub fn build_native(
     native_opts: &NativeOptions,
     aes_key: &[u8; 32],
     aes_nonce: &[u8; 12],
+    password_material: Option<&PasswordMaterial>,
     file: &str,
     outfile: Option<&str>,
     verbose: bool,
@@ -184,21 +232,21 @@ pub fn build_native(
         }
     }
 
+    // Password mode: store the salt and the domain-separated verification hash.
+    // The AEAD key itself is derived from the password at runtime and is NEVER
+    // stored — so the payload alone cannot decrypt the script.
     if native_opts.password {
-        let pass = security::read_password("Enter password: ")?;
-        let pass_confirm = security::read_password("Confirm password: ")?;
-        if pass != pass_confirm {
-            bail!("rshc: passwords do not match");
-        }
-        if pass.is_empty() {
-            bail!("rshc: password cannot be empty");
-        }
-        rand::Rng::fill(&mut rand::rngs::OsRng, &mut password_salt);
-        password_hash = security::hash_password(pass.as_bytes(), &password_salt);
+        let material =
+            password_material.ok_or_else(|| anyhow::anyhow!("rshc: password material missing"))?;
+        password_salt = material.salt;
+        password_hash = material.verify_hash;
     }
 
-    // Store AEAD key in the pswd array for transport (first 32 bytes)
-    let pswd = if native_opts.aes || native_opts.chacha {
+    // AEAD key transport:
+    // - password mode: the runner re-derives the key, so nothing is prepended.
+    // - aes/chacha WITHOUT password (convenience mode): the random key is
+    //   prepended to pswd for transport (first 32 bytes).
+    let pswd = if (native_opts.aes || native_opts.chacha) && !native_opts.password {
         let mut extended = aes_key.to_vec();
         extended.extend_from_slice(&encrypted.pswd);
         extended

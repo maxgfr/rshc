@@ -116,7 +116,7 @@ fn main() -> Result<()> {
 
     if args.native {
         // Native Rust runner path — no C compiler needed
-        let native_opts = native::NativeOptions {
+        let mut native_opts = native::NativeOptions {
             aes: args.aes,
             chacha: args.chacha,
             password: args.password,
@@ -128,9 +128,33 @@ fn main() -> Result<()> {
             anti_vm: args.anti_vm,
         };
 
-        // Pre-process text: compress then AES-encrypt BEFORE RC4
-        let (processed_text, aes_key, aes_nonce) =
-            native::preprocess_text(&text, &native_opts, args.verbose)?;
+        // A password must always map to a cryptographic key-derivation layer.
+        // If the user asked for a password but named no AEAD cipher, default to
+        // AES-256-GCM keyed by the password (via Argon2id) so the password
+        // actually gates decryption.
+        if native_opts.password && !native_opts.aes && !native_opts.chacha {
+            native_opts.aes = true;
+            if args.verbose {
+                eprintln!("rshc: password set — enabling AES-256-GCM keyed by the password");
+            }
+        }
+
+        // Prompt for the password up front so its derived key can key the AEAD
+        // layer applied during pre-processing.
+        let password_material = if native_opts.password {
+            Some(native::derive_password_material()?)
+        } else {
+            None
+        };
+
+        // Pre-process text: compress then AES-encrypt BEFORE RC4. In password
+        // mode the AEAD key is the password-derived key, not a random one.
+        let (processed_text, aes_key, aes_nonce) = native::preprocess_text(
+            &text,
+            &native_opts,
+            password_material.as_ref().map(|m| &m.key),
+            args.verbose,
+        )?;
 
         let job = codegen::CompileJob {
             file,
@@ -150,6 +174,7 @@ fn main() -> Result<()> {
             &native_opts,
             &aes_key,
             &aes_nonce,
+            password_material.as_ref(),
             file,
             args.outfile.as_deref(),
             args.verbose,

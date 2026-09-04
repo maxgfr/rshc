@@ -167,9 +167,15 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     hash
 }
 
-/// Hash a password with a salt using Argon2id (memory-hard, GPU-resistant).
-/// Output is 32 bytes suitable for storage or key derivation.
-pub fn hash_password(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
+/// Domain-separation context used to derive the password-verification hash
+/// from the AEAD key. Keeps the stored verification hash from revealing the key.
+const PW_VERIFY_CONTEXT: &[u8] = b"rshc-pw-verify-v1";
+
+/// Derive a 32-byte cryptographic key from a password and salt using Argon2id
+/// (memory-hard, GPU-resistant). This is the KDF used to turn a user password
+/// into the AEAD (AES-256-GCM / ChaCha20-Poly1305) key — the wrong password
+/// produces the wrong key, so decryption fails at the AEAD auth tag.
+pub fn derive_key_argon2(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
     use argon2::{Algorithm, Argon2, Params, Version};
 
     // Argon2id with moderate parameters (suitable for CLI tool):
@@ -177,10 +183,31 @@ pub fn hash_password(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
     let params = Params::new(19456, 2, 1, Some(32)).expect("valid argon2 params");
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let mut hash = [0u8; 32];
+    let mut key = [0u8; 32];
     argon2
-        .hash_password_into(password, salt, &mut hash)
+        .hash_password_into(password, salt, &mut key)
         .expect("argon2 hash failed");
+    key
+}
+
+/// Hash a password with a salt using Argon2id (memory-hard, GPU-resistant).
+/// Output is 32 bytes suitable for storage or key derivation.
+pub fn hash_password(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
+    derive_key_argon2(password, salt)
+}
+
+/// Derive the password-verification hash from the AEAD key with domain
+/// separation. Because SHA-256 is one-way and the context differs from any
+/// other use of the key, the stored verification hash cannot be used to
+/// reconstruct the AEAD key: the auth tag remains the true gate.
+pub fn password_verify_hash(aead_key: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(PW_VERIFY_CONTEXT);
+    hasher.update(aead_key);
+    let result = hasher.finalize();
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
     hash
 }
 
@@ -234,12 +261,27 @@ pub fn verify_binary_integrity(
 
     let mut file = std::fs::File::open(exe_path)?;
 
+    let total_size = file.seek(SeekFrom::End(0))?;
+    if total_size < 8 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file too small to contain a payload",
+        ));
+    }
+
     file.seek(SeekFrom::End(-8))?;
     let mut size_buf = [0u8; 8];
     file.read_exact(&mut size_buf)?;
     let payload_size = u64::from_le_bytes(size_buf);
 
-    let total_size = file.seek(SeekFrom::End(0))?;
+    // Reject a crafted/corrupt trailer: the payload cannot be larger than the
+    // file, and the size must stay within seek range (i64).
+    if payload_size > total_size || payload_size > i64::MAX as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "payload size exceeds file size",
+        ));
+    }
     let runner_size = total_size - payload_size;
 
     file.seek(SeekFrom::Start(0))?;

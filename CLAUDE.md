@@ -71,7 +71,7 @@ tests/
 
 - **AES-256-GCM** (`--aes`): Additional encryption layer on top of RC4. Key stored in extended pswd array.
 - **ChaCha20-Poly1305** (`--chacha`): Alternative AEAD cipher, faster on ARM/CPUs without AES-NI.
-- **Password protection** (`-p`): Argon2id-hashed password with salt, verified at runtime with constant-time comparison.
+- **Password protection** (`-p`): the password is a real cryptographic gate, not just a checked hash. The AEAD key is **derived** from the password via Argon2id (`security::derive_key_argon2`) — it is never stored in the binary, so the payload alone cannot be decrypted. If neither `--aes` nor `--chacha` is given, `-p` **auto-enables AES-256-GCM** keyed by that derived key. Only the random salt and a domain-separated one-way verification hash (`sha256("rshc-pw-verify-v1" || key)`) are stored: a fast constant-time pre-check gives a clean "wrong password" error, but the AEAD auth tag is the true gate — a wrong password derives a wrong key and decryption fails. (The old convenience path — storing a random AEAD key in the first 32 bytes of `pswd` — remains **only** for aes/chacha *without* a password.)
 - **Compression** (`--compress`): Deflate compression of script text before encryption. Applied before AES, decompressed after AES decrypt in runner.
 
 ### Anti-debug & anti-analysis (multi-layer)

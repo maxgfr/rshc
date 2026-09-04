@@ -50,7 +50,7 @@ pub struct Cli {
         long = "message",
         help_heading = "Expiration",
         value_name = "TEXT",
-        default_value = "Please contact your provider jahidulhamid@yahoo.com"
+        default_value = "Please contact your provider."
     )]
     pub mail: String,
 

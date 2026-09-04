@@ -180,10 +180,27 @@ impl Payload {
     /// Read payload from the end of an executable (trailer pattern).
     /// The last 8 bytes encode the total payload size.
     pub fn read_from_exe<R: Read + Seek>(r: &mut R) -> io::Result<Self> {
+        let total = r.seek(SeekFrom::End(0))?;
+        if total < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file too small to contain a payload",
+            ));
+        }
+
         r.seek(SeekFrom::End(-8))?;
         let mut size_buf = [0u8; 8];
         r.read_exact(&mut size_buf)?;
         let payload_size = u64::from_le_bytes(size_buf);
+
+        // Reject a crafted/corrupt trailer before seeking: the payload cannot
+        // be larger than the file, and must fit in the signed seek offset.
+        if payload_size > total || payload_size > i64::MAX as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "payload size exceeds file size",
+            ));
+        }
 
         r.seek(SeekFrom::End(-(payload_size as i64)))?;
         Self::deserialize(r)
@@ -196,9 +213,11 @@ mod tests {
     use std::io::Cursor;
 
     fn make_test_payload() -> Payload {
-        let mut p = Payload::default();
-        p.flags = FLAG_TRACEABLE;
-        p.relax_was_zero = true;
+        let mut p = Payload {
+            flags: FLAG_TRACEABLE,
+            relax_was_zero: true,
+            ..Default::default()
+        };
         p.arrays[IDX_PSWD] = vec![1, 2, 3, 4];
         p.arrays[IDX_MSG1] = b"has expired!\n\0".to_vec();
         p.arrays[IDX_DATE] = b"\0".to_vec();
@@ -258,8 +277,21 @@ mod tests {
     }
 
     #[test]
+    fn test_read_from_exe_rejects_oversized_trailer() {
+        // A trailer claiming a payload larger than the file must be rejected
+        // cleanly (InvalidData), not panic on the seek arithmetic.
+        let mut exe_data = vec![0u8; 32];
+        // Last 8 bytes encode a bogus, enormous payload size.
+        exe_data.extend_from_slice(&u64::MAX.to_le_bytes());
+        let mut cursor = Cursor::new(&exe_data);
+        let result = Payload::read_from_exe(&mut cursor);
+        assert!(result.is_err());
+        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn test_invalid_magic() {
-        let buf = vec![0u8; 200];
+        let buf = [0u8; 200];
         let mut cursor = Cursor::new(&buf[..]);
         assert!(Payload::deserialize(&mut cursor).is_err());
     }
@@ -283,8 +315,10 @@ mod tests {
 
     #[test]
     fn test_large_payload() {
-        let mut p = Payload::default();
-        p.flags = 0xFF;
+        let mut p = Payload {
+            flags: 0xFF,
+            ..Default::default()
+        };
         p.arrays[IDX_PSWD] = vec![0xAB; 256];
         p.arrays[IDX_TEXT] = vec![0x42; 65536];
         p.arrays[IDX_SHLL] = b"/bin/bash\0".to_vec();

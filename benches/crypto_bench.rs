@@ -122,8 +122,10 @@ fn bench_payload_roundtrip(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("payload");
 
-    let mut payload = Payload::default();
-    payload.flags = FLAG_TRACEABLE;
+    let mut payload = Payload {
+        flags: FLAG_TRACEABLE,
+        ..Default::default()
+    };
     payload.arrays[0] = vec![0xAB; 256]; // pswd
     payload.arrays[12] = vec![0x42; 4096]; // text (typical script)
 

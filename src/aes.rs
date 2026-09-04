@@ -34,19 +34,6 @@ pub fn aes_decrypt(
         .map_err(|e| format!("AES-256-GCM decryption failed: {}", e))
 }
 
-/// Derive a 256-bit AES key from a password and salt using SHA-256.
-pub fn derive_key(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(salt);
-    hasher.update(password);
-    hasher.update(salt);
-    let result = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&result);
-    key
-}
-
 /// Zero out a key securely.
 pub fn zero_key(key: &mut [u8; 32]) {
     key.zeroize();
@@ -119,35 +106,6 @@ mod tests {
         let (ciphertext, nonce) = aes_encrypt(&plaintext, &key).unwrap();
         let decrypted = aes_decrypt(&ciphertext, &key, &nonce).unwrap();
         assert_eq!(decrypted, plaintext);
-    }
-
-    #[test]
-    fn test_derive_key_deterministic() {
-        let password = b"my_password";
-        let salt = [0x11u8; 32];
-
-        let key1 = derive_key(password, &salt);
-        let key2 = derive_key(password, &salt);
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
-    fn test_derive_key_different_salts() {
-        let password = b"my_password";
-        let salt1 = [0x11u8; 32];
-        let salt2 = [0x22u8; 32];
-
-        let key1 = derive_key(password, &salt1);
-        let key2 = derive_key(password, &salt2);
-        assert_ne!(key1, key2);
-    }
-
-    #[test]
-    fn test_derive_key_different_passwords() {
-        let salt = [0x11u8; 32];
-        let key1 = derive_key(b"password1", &salt);
-        let key2 = derive_key(b"password2", &salt);
-        assert_ne!(key1, key2);
     }
 
     #[test]
