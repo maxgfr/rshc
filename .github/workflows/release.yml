@@ -78,6 +78,7 @@ jobs:
           chmod +x binaries/*
 
       - name: Release
+        id: semantic
         uses: cycjimmy/semantic-release-action@v6
         with:
           extra_plugins: |
@@ -86,16 +87,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get release tag
-        id: get_tag
-        run: |
-          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
+      # Only when semantic-release cut a version: a push that releases nothing
+      # must not replace the binaries of the last release, whose checksums the
+      # Homebrew formula pins.
       - name: Upload binaries to release
-        if: steps.get_tag.outputs.tag != ''
+        if: steps.semantic.outputs.new_release_published == 'true'
         run: |
-          TAG="${{ steps.get_tag.outputs.tag }}"
+          TAG="v${{ steps.semantic.outputs.new_release_version }}"
           gh release upload "$TAG" binaries/rshc-linux-x64 binaries/rshc-runner-linux-x64 binaries/rshc-macos-x64 binaries/rshc-runner-macos-x64 binaries/rshc-macos-arm64 binaries/rshc-runner-macos-arm64 --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
